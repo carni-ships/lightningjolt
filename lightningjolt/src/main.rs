@@ -1,14 +1,14 @@
-//! Jolteon — Jolt Prover Optimizer for Apple Silicon
+//! LightningJolt — Jolt Prover Optimizer for Apple Silicon
 //!
-//! Profiles and optimizes the Jolt proving pipeline for Persistia
+//! Profiles and optimizes the Jolt proving pipeline
 //! state transition proofs on M3 Pro hardware.
 //!
 //! Usage:
-//!   cargo run --release -p jolteon -- profile --tier minimal
-//!   cargo run --release -p jolteon -- profile --tier all --trace
-//!   cargo run --release -p jolteon -- tune-threads
-//!   cargo run --release -p jolteon -- sweep
-//!   cargo run --release -p jolteon -- gpu --size 65536
+//!   cargo run --release -p lightningjolt -- profile --tier minimal
+//!   cargo run --release -p lightningjolt -- profile --tier all --trace
+//!   cargo run --release -p lightningjolt -- tune-threads
+//!   cargo run --release -p lightningjolt -- sweep
+//!   cargo run --release -p lightningjolt -- gpu --size 65536
 
 pub mod aarch64_mont;
 pub mod metal_msm;
@@ -18,7 +18,7 @@ mod thread_tuner;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "jolteon", about = "Jolt prover optimizer for Apple Silicon")]
+#[command(name = "lightningjolt", about = "Jolt prover optimizer for Apple Silicon")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

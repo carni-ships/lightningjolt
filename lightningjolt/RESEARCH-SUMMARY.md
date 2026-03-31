@@ -1,6 +1,6 @@
-# Jolteon: Optimizing the Jolt zkVM Prover for Persistia
+# LightningJolt: Optimizing the Jolt zkVM Prover
 
-**Authors:** Persistia Research
+**Authors:** LightningJolt
 **Date:** 2026-03-28
 **Target:** a16z/jolt (commit eb370ec2), Dory polynomial commitment scheme
 **Hardware:** Apple M3 Pro (6P + 6E cores, 18GB unified memory)
@@ -9,13 +9,13 @@
 
 ## Abstract
 
-We profiled and optimized the Jolt zkVM prover to reduce proving time for Persistia's on-chain Merkle state commitment circuit. Through Chrome trace analysis we identified that **63% of proving time** was spent in BN254 pairing operations within the Dory polynomial commitment scheme. We implemented two targeted optimizations — Montgomery's batch affine conversion in the pairing layer and G1 SRS base caching in the commitment layer — achieving a **14-40% reduction in proving time** across all circuit sizes. We also investigated and ruled out three other optimization paths: Metal GPU acceleration, custom AArch64 assembly, and witness/proving pipeline overlap.
+We profiled and optimized the Jolt zkVM prover to reduce proving time across all Jolt programs. Through Chrome trace analysis we identified that **63% of proving time** was spent in BN254 pairing operations within the Dory polynomial commitment scheme. We implemented two targeted optimizations — Montgomery's batch affine conversion in the pairing layer and G1 SRS base caching in the commitment layer — achieving a **14-40% reduction in proving time** across all circuit sizes. We also investigated and ruled out three other optimization paths: Metal GPU acceleration, custom AArch64 assembly, and witness/proving pipeline overlap.
 
 ---
 
 ## 1. Motivation
 
-Persistia uses Jolt to prove Merkle root correctness for state commitments. Each block commits 4-64 key-value mutations, and the prover must generate a SNARK proof that the new Merkle root is consistent with the mutations. Proving latency directly impacts block finality time. Our goal was to minimize prove time on consumer hardware (Apple M3 Pro) without modifying the proof protocol or sacrificing soundness.
+Jolt's Dory polynomial commitment scheme dominates proving time. For latency-sensitive applications — on-chain state proofs, interactive verification, real-time proving — every millisecond matters. Our goal was to minimize prove time on consumer hardware (Apple M3 Pro) without modifying the proof protocol or sacrificing soundness.
 
 ---
 
@@ -400,15 +400,15 @@ The Miller loop computation itself (not the affine conversion) is now the domina
 ```bash
 # Build
 cd contracts/zk-jolt-workspace
-cargo build --release -p jolteon
+cargo build --release -p lightningjolt
 
 # Run single tier
-RAYON_NUM_THREADS=10 cargo run --release -p jolteon -- profile --tier large
+RAYON_NUM_THREADS=10 cargo run --release -p lightningjolt -- profile --tier large
 
 # Run full sweep (all tiers, 2 iterations each)
-RAYON_NUM_THREADS=10 cargo run --release -p jolteon -- sweep --iterations 2
+RAYON_NUM_THREADS=10 cargo run --release -p lightningjolt -- sweep --iterations 2
 
 # With Chrome trace output (viewable in Perfetto)
-RAYON_NUM_THREADS=10 cargo run --release -p jolteon -- profile --tier large --trace
-# Opens jolteon-trace.json in https://ui.perfetto.dev
+RAYON_NUM_THREADS=10 cargo run --release -p lightningjolt -- profile --tier large --trace
+# Opens lightningjolt-trace.json in https://ui.perfetto.dev
 ```

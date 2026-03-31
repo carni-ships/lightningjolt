@@ -147,7 +147,7 @@ fn prove_with_threads(tier: &BenchTier, num_threads: usize) -> f64 {
     let (mc, kf, kl, vf, vl, root, sigs, an, bn) = generate_synthetic_block(tier);
 
     pool.install(|| {
-        let target_dir = "/tmp/jolt-persistia-targets";
+        let target_dir = "/tmp/jolt-lightningjolt-targets";
         let mut program = guest::compile_prove_block(target_dir);
         let shared = guest::preprocess_shared_prove_block(&mut program);
         let prover_pp = guest::preprocess_prover_prove_block(shared.clone());
@@ -199,7 +199,7 @@ pub fn run_tune(tier_name: &str) {
         });
 
     let hw_threads = num_cpus();
-    println!("Jolteon Thread Tuner — M3 Pro ({hw_threads} hardware threads)");
+    println!("LightningJolt Thread Tuner — M3 Pro ({hw_threads} hardware threads)");
     println!("Tier: {} ({} mutations)", tier.name, tier.mutations);
     println!("=========================================================\n");
 

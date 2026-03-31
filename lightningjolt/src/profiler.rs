@@ -1,6 +1,6 @@
 //! Per-stage profiler for the Jolt proving pipeline.
 //!
-//! Wraps the Persistia guest prover with fine-grained timing instrumentation
+//! Wraps the Jolt guest prover with fine-grained timing instrumentation
 //! and optional Chrome trace output for Perfetto visualization.
 
 use std::time::Instant;
@@ -166,7 +166,7 @@ fn run_single_profile(tier: &BenchTier) -> StageTimings {
 
     // Phase 1: Compile guest to RISC-V ELF
     let compile_start = Instant::now();
-    let target_dir = "/tmp/jolt-persistia-targets";
+    let target_dir = "/tmp/jolt-lightningjolt-targets";
     let mut program = guest::compile_prove_block(target_dir);
     let compile_secs = compile_start.elapsed().as_secs_f64();
     println!("  Compile:      {compile_secs:>8.3}s");
@@ -230,7 +230,7 @@ fn run_single_profile(tier: &BenchTier) -> StageTimings {
 pub fn run_profile(tier_name: &str, trace: bool, iterations: u32) {
     let _guard = if trace {
         let (chrome_layer, guard) = tracing_chrome::ChromeLayerBuilder::new()
-            .file("jolteon-trace.json")
+            .file("lightningjolt-trace.json")
             .build();
         tracing_subscriber::fmt()
             .with_env_filter("jolt_core=info")
@@ -238,7 +238,7 @@ pub fn run_profile(tier_name: &str, trace: bool, iterations: u32) {
         use tracing_subscriber::layer::SubscriberExt;
         let subscriber = tracing_subscriber::registry().with(chrome_layer);
         tracing::subscriber::set_global_default(subscriber).ok();
-        println!("Chrome trace enabled → jolteon-trace.json");
+        println!("Chrome trace enabled → lightningjolt-trace.json");
         Some(guard)
     } else {
         tracing_subscriber::fmt()
@@ -257,7 +257,7 @@ pub fn run_profile(tier_name: &str, trace: bool, iterations: u32) {
         std::process::exit(1);
     }
 
-    println!("Jolteon Profiler — Apple M3 Pro (12 cores, 18GB)");
+    println!("LightningJolt Profiler — Apple M3 Pro (12 cores, 18GB)");
     println!("================================================\n");
 
     let mut results = Vec::new();
@@ -288,7 +288,7 @@ pub fn run_sweep(iterations: u32) {
         .with_env_filter("jolt_core=warn")
         .init();
 
-    println!("Jolteon Sweep — All Tiers × Optimized Settings");
+    println!("LightningJolt Sweep — All Tiers × Optimized Settings");
     println!("===============================================\n");
 
     let mut results = Vec::new();
@@ -314,7 +314,7 @@ pub fn run_sweep(iterations: u32) {
 
 fn print_profile_table(results: &[StageTimings]) {
     println!("==========================================================================");
-    println!(" JOLTEON PROFILE RESULTS");
+    println!(" LIGHTNINGJOLT PROFILE RESULTS");
     println!("==========================================================================");
     println!(
         "{:<10} {:>5} {:>8} {:>8} {:>8} {:>8} {:>8} {:>5}",
@@ -339,7 +339,7 @@ fn print_profile_table(results: &[StageTimings]) {
 
 fn print_comparison_table(results: &[StageTimings]) {
     println!("==========================================================================");
-    println!(" JOLTEON vs SP1 COMPARISON");
+    println!(" LIGHTNINGJOLT vs SP1 COMPARISON");
     println!("==========================================================================");
     println!(
         "{:<10} {:>10} {:>10} {:>10} {:>8}",

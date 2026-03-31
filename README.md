@@ -6,7 +6,7 @@ Optimizing the [Jolt](https://github.com/a16z/jolt) zkVM prover and building the
 
 Jolt is a zkVM for RISC-V (RV64IMAC) that uses sumcheck-based protocols and the Dory polynomial commitment scheme. This fork contains two lines of work, applicable to any Jolt program:
 
-1. **Prover optimization (Jolteon)** — 14-40% faster proving via batch affine conversion in BN254 pairings and G1 SRS caching
+1. **Prover optimization (LightningJolt)** — 14-40% faster proving via batch affine conversion in BN254 pairings and G1 SRS caching
 2. **On-chain verification** — A Groth16 wrapper circuit that makes Dory proofs verifiable on Ethereum for ~320K gas
 
 ## Prover Optimization
@@ -27,7 +27,7 @@ Hardware: Apple M3 Pro, `RAYON_NUM_THREADS=10`.
 
 We also investigated and ruled out Metal GPU acceleration (4x penalty from lack of native 64-bit integer multiply), custom AArch64 assembly (LLVM already optimal), and witness/proving pipeline overlap (blocked by Fiat-Shamir transcript ordering).
 
-See [`Jolteon/RESEARCH-SUMMARY.md`](Jolteon/RESEARCH-SUMMARY.md) for the full write-up.
+See [`LightningJolt/RESEARCH-SUMMARY.md`](LightningJolt/RESEARCH-SUMMARY.md) for the full write-up.
 
 ## On-Chain Dory Verification
 
@@ -56,7 +56,7 @@ The on-chain verifier code lives in a sibling directory (`contracts/zk-onchain-v
 ```
 jolt-core/              # Core proving system (with Dory pairing optimizations)
 third-party/dory-pcs/   # Local fork of dory-pcs with batch affine conversion
-Jolteon/                # Profiler, benchmarks, Metal GPU experiments, research reports
+LightningJolt/                # Profiler, benchmarks, Metal GPU experiments, research reports
   RESEARCH-SUMMARY.md   # Full optimization research write-up
   RESULTS.md            # Benchmark results and findings
   shaders/              # Metal compute shaders (BN254 field ops, MSM)
@@ -70,13 +70,13 @@ Jolteon/                # Profiler, benchmarks, Metal GPU experiments, research 
 cargo build --release -p jolt-core
 
 # Run benchmarks
-RAYON_NUM_THREADS=10 cargo run --release -p jolteon -- profile --tier large
+RAYON_NUM_THREADS=10 cargo run --release -p lightningjolt -- profile --tier large
 
 # Run full sweep
-RAYON_NUM_THREADS=10 cargo run --release -p jolteon -- sweep --iterations 2
+RAYON_NUM_THREADS=10 cargo run --release -p lightningjolt -- sweep --iterations 2
 
 # Generate Chrome trace (viewable in Perfetto)
-RAYON_NUM_THREADS=10 cargo run --release -p jolteon -- profile --tier large --trace
+RAYON_NUM_THREADS=10 cargo run --release -p lightningjolt -- profile --tier large --trace
 ```
 
 ## Upstream

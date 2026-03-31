@@ -1,11 +1,11 @@
 [package]
-name = "jolteon"
+name = "lightningjolt"
 version = "0.1.0"
 edition = "2021"
 description = "Jolt prover optimizations for Apple Silicon (M3 Pro)"
 
 [[bin]]
-name = "jolteon"
+name = "lightningjolt"
 path = "src/main.rs"
 
 [[bench]]

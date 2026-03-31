@@ -1,4 +1,4 @@
-# Jolteon — Jolt Prover Optimization Results
+# LightningJolt — Jolt Prover Optimization Results
 
 **Hardware:** Apple M3 Pro (6P + 6E cores, 18GB unified memory)
 **Date:** 2026-03-28
