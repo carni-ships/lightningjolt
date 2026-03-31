@@ -112,7 +112,6 @@ impl<F: JoltField, E1: CycleMajorMatrixEntry<F>> From<ReadWriteMatrixCycleMajor<
 impl<F: JoltField, E: AddressMajorMatrixEntry<F>> ReadWriteMatrixAddressMajor<F, E> {
     /// Binds an address variable of the ra and Val polynomials represented by
     /// this `SparseMatrixPolynomial` to the random challenge `r`.
-    #[tracing::instrument(skip_all, name = "SparseMatrixPolynomial::bind")]
     pub fn bind(&mut self, r: F::Challenge) {
         let col_lengths: Vec<_> = self
             .entries

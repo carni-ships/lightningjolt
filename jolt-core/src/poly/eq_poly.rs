@@ -63,7 +63,6 @@ impl<F: JoltField> EqPolynomial<F> {
         r.par_iter().map(|r_i| F::one() - (*r_i).into()).product()
     }
 
-    #[tracing::instrument(skip_all, name = "EqPolynomial::evals")]
     /// Computes the table of evaluations: `{ eq(r, x) : x ∈ {0, 1}^n }`.
     ///
     /// ### Index / bit order: Big-endian
@@ -185,7 +184,6 @@ impl<F: JoltField> EqPolynomial<F> {
         (block_size, evals)
     }
 
-    #[tracing::instrument(skip_all, name = "EqPolynomial::evals_cached")]
     /// Computes eq evaluations like [`Self::evals`], but also caches intermediate tables.
     ///
     /// Returns `result` where `result[j]` contains evaluations for the **prefix** `r[..j]`:
@@ -275,16 +273,17 @@ impl<F: JoltField> EqPolynomial<F> {
     /// Returns `result` where `result[j][x] = scaling_factor * eq(r[(n-j)..], x)` for `x ∈ {0,1}^j`.
     /// Uses **little-endian** (high-to-low) index order; see [`Self::evals_cached_rev`] for details.
     pub fn evals_serial_cached_rev(r: &[F::Challenge], scaling_factor: Option<F>) -> Vec<Vec<F>> {
-        let rev_r = r.iter().rev().collect::<Vec<_>>();
-        let mut evals: Vec<Vec<F>> = (0..r.len() + 1)
+        let n = r.len();
+        let mut evals: Vec<Vec<F>> = (0..n + 1)
             .map(|i| vec![scaling_factor.unwrap_or(F::one()); 1 << i])
             .collect();
         let mut size = 1;
-        for j in 0..r.len() {
+        for j in 0..n {
+            let r_val = r[n - 1 - j];
             for i in 0..size {
                 let scalar = evals[j][i];
                 let multiple = 1 << j;
-                evals[j + 1][i + multiple] = scalar * *rev_r[j];
+                evals[j + 1][i + multiple] = scalar * r_val;
                 evals[j + 1][i] = scalar - evals[j + 1][i + multiple];
             }
             size *= 2;
@@ -308,17 +307,26 @@ impl<F: JoltField> EqPolynomial<F> {
         let mut size = 1;
         evals[0] = scaling_factor.unwrap_or(F::one());
 
+        const PAR_THRESHOLD: usize = 4096;
+
         for r in r.iter().rev() {
             let (evals_left, evals_right) = evals.split_at_mut(size);
             let (evals_right, _) = evals_right.split_at_mut(size);
 
-            evals_left
-                .par_iter_mut()
-                .zip(evals_right.par_iter_mut())
-                .for_each(|(x, y)| {
+            if size < PAR_THRESHOLD {
+                for (x, y) in evals_left.iter_mut().zip(evals_right.iter_mut()) {
                     *y = *x * *r;
                     *x -= *y;
-                });
+                }
+            } else {
+                evals_left
+                    .par_iter_mut()
+                    .zip(evals_right.par_iter_mut())
+                    .for_each(|(x, y)| {
+                        *y = *x * *r;
+                        *x -= *y;
+                    });
+            }
 
             size *= 2;
         }

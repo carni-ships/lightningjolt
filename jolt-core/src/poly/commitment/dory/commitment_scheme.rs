@@ -18,14 +18,42 @@ use crate::{
 };
 use ark_bn254::{G1Affine, G1Projective};
 use ark_ec::CurveGroup;
-use ark_ff::Zero;
+use ark_ff::{AdditiveGroup, Zero};
 use dory::primitives::{
     arithmetic::{Field as DoryField, Group, PairingCurve},
     poly::Polynomial,
 };
 use rayon::prelude::*;
 use std::borrow::Borrow;
+use std::sync::{Arc, RwLock};
 use tracing::trace_span;
+
+static G1_AFFINE_CACHE: RwLock<Option<(usize, Arc<Vec<G1Affine>>)>> = RwLock::new(None);
+
+fn get_cached_g1_affine_bases(setup: &ArkworksProverSetup, row_len: usize) -> Arc<Vec<G1Affine>> {
+    // Fast path: read-only check
+    {
+        let cache = G1_AFFINE_CACHE.read().unwrap();
+        if let Some((cached_len, ref bases)) = *cache {
+            if cached_len == row_len {
+                return bases.clone();
+            }
+        }
+    }
+    // Slow path: compute and cache
+    let mut cache = G1_AFFINE_CACHE.write().unwrap();
+    // Double-check after acquiring write lock
+    if let Some((cached_len, ref bases)) = *cache {
+        if cached_len == row_len {
+            return bases.clone();
+        }
+    }
+    let g1_slice = unsafe { std::slice::from_raw_parts(setup.g1_vec.as_ptr(), setup.g1_vec.len()) };
+    let projs: Vec<G1Projective> = g1_slice[..row_len].iter().map(|g| g.0).collect();
+    let bases = Arc::new(G1Projective::normalize_batch(&projs));
+    *cache = Some((row_len, bases.clone()));
+    bases
+}
 
 #[derive(Clone)]
 pub struct DoryCommitmentScheme;
@@ -85,17 +113,23 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_prover").entered();
+
+        #[cfg(feature = "metal-pairing")]
+        super::metal_pairing::register();
+
         #[cfg(not(target_arch = "wasm32"))]
-        let setup = ArkworksProverSetup::new_from_urs(max_num_vars);
+        let setup = {
+            let _load_span = trace_span!("load_srs").entered();
+            ArkworksProverSetup::new_from_urs(max_num_vars)
+        };
         #[cfg(target_arch = "wasm32")]
         let setup = ArkworksProverSetup::new(max_num_vars);
 
-        // The prepared-point cache in dory-pcs is global and can only be initialized once.
-        // In unit tests, multiple setups with different sizes are created, so initializing the
-        // cache with a small setup can break later tests that need more generators.
-        // We therefore disable cache initialization in `cfg(test)` builds.
         #[cfg(not(test))]
-        DoryGlobals::init_prepared_cache(&setup.g1_vec, &setup.g2_vec);
+        {
+            let _cache_span = trace_span!("init_prepared_cache").entered();
+            DoryGlobals::init_prepared_cache(&setup.g1_vec, &setup.g2_vec);
+        }
 
         setup
     }
@@ -265,32 +299,63 @@ impl CommitmentScheme for DoryCommitmentScheme {
     ) -> Self::OpeningProofHint {
         let num_rows = DoryGlobals::get_max_num_rows();
 
-        let mut rlc_hint = vec![ArkG1(G1Projective::zero()); num_rows];
-        for (coeff, mut hint) in coeffs.iter().zip(hints.into_iter()) {
-            hint.0.resize(num_rows, ArkG1(G1Projective::zero()));
-
-            let row_commitments: &mut [G1Projective] = unsafe {
-                std::slice::from_raw_parts_mut(
-                    hint.0.as_mut_ptr() as *mut G1Projective,
-                    hint.0.len(),
-                )
-            };
-
-            let rlc_row_commitments: &[G1Projective] = unsafe {
-                std::slice::from_raw_parts(rlc_hint.as_ptr() as *const G1Projective, rlc_hint.len())
-            };
-
-            let _span = trace_span!("vector_scalar_mul_add_gamma_g1_online");
-            let _enter = _span.enter();
-
-            jolt_optimizations::vector_scalar_mul_add_gamma_g1_online(
-                row_commitments,
-                *coeff,
-                rlc_row_commitments,
-            );
-
-            let _ = std::mem::replace(&mut rlc_hint, hint.0);
+        let mut owned_hints: Vec<Vec<ArkG1>> = hints.into_iter().map(|h| h.0).collect();
+        for h in &mut owned_hints {
+            if h.len() < num_rows {
+                h.resize(num_rows, ArkG1(G1Projective::zero()));
+            }
         }
+
+        // Pre-compute scalar digit decomposition (window=4, 64 windows of 4 bits)
+        // for Pippenger MSM. This avoids 42 individual scalar mults per row.
+        let scalars_digits: Vec<[u8; 64]> = coeffs
+            .iter()
+            .map(|c| {
+                let bigint = ark_ff::PrimeField::into_bigint(*c);
+                let limbs = bigint.0;
+                let mut digits = [0u8; 64];
+                for (i, digit) in digits.iter_mut().enumerate() {
+                    let limb_idx = i / 16;
+                    let nibble_idx = i % 16;
+                    *digit = ((limbs[limb_idx] >> (nibble_idx * 4)) & 0xF) as u8;
+                }
+                digits
+            })
+            .collect();
+
+        // Parallel row-wise Pippenger MSM (window=4, 16 buckets)
+        let rlc_hint: Vec<ArkG1> = (0..num_rows)
+            .into_par_iter()
+            .map(|r| {
+                let mut result = G1Projective::zero();
+                // Process windows from most significant to least significant
+                for w in (0..64).rev() {
+                    if w != 63 {
+                        // Double 4 times (shift by window width)
+                        result.double_in_place();
+                        result.double_in_place();
+                        result.double_in_place();
+                        result.double_in_place();
+                    }
+                    // Scatter points into 16 buckets (bucket 0 = identity, skip)
+                    let mut buckets = [G1Projective::zero(); 15];
+                    for (poly_idx, digits) in scalars_digits.iter().enumerate() {
+                        let digit = digits[w] as usize;
+                        if digit > 0 {
+                            buckets[digit - 1] += owned_hints[poly_idx][r].0;
+                        }
+                    }
+                    // Reduce buckets: bucket[i] contributes (i+1) * bucket[i]
+                    // Running sum trick: sum = b[14], result += sum; sum += b[13], result += sum; ...
+                    let mut running = G1Projective::zero();
+                    for b in (0..15).rev() {
+                        running += buckets[b];
+                        result += running;
+                    }
+                }
+                ArkG1(result)
+            })
+            .collect();
 
         DoryOpeningProofHint::new(rlc_hint)
     }
@@ -305,10 +370,10 @@ impl CommitmentScheme for DoryCommitmentScheme {
         let _span = trace_span!("DoryCommitmentScheme::combine_commitments").entered();
 
         // Combine GT elements using parallel RLC
-        let commitments_vec: Vec<&ArkGT> = commitments.iter().map(|c| c.borrow()).collect();
+        let borrowed: Vec<&ArkGT> = commitments.iter().map(|c| c.borrow()).collect();
         coeffs
             .par_iter()
-            .zip(commitments_vec.par_iter())
+            .zip(borrowed.par_iter())
             .map(|(coeff, commitment)| {
                 let ark_coeff = jolt_to_ark(coeff);
                 ark_coeff * **commitment
@@ -320,28 +385,17 @@ impl CommitmentScheme for DoryCommitmentScheme {
 impl StreamingCommitmentScheme for DoryCommitmentScheme {
     type ChunkState = Vec<ArkG1>; // Tier 1 commitment chunks
 
-    #[tracing::instrument(skip_all, name = "DoryCommitmentScheme::compute_tier1_commitment")]
     fn process_chunk<T: SmallScalar>(setup: &Self::ProverSetup, chunk: &[T]) -> Self::ChunkState {
         debug_assert_eq!(chunk.len(), DoryGlobals::get_num_columns());
 
         let row_len = DoryGlobals::get_num_columns();
-        let g1_slice =
-            unsafe { std::slice::from_raw_parts(setup.g1_vec.as_ptr(), setup.g1_vec.len()) };
-
-        let g1_bases: Vec<G1Affine> = g1_slice[..row_len]
-            .iter()
-            .map(|g| g.0.into_affine())
-            .collect();
+        let g1_bases = get_cached_g1_affine_bases(setup, row_len);
 
         let row_commitment =
             ArkG1(T::msm(&g1_bases[..chunk.len()], chunk).expect("MSM calculation failed."));
         vec![row_commitment]
     }
 
-    #[tracing::instrument(
-        skip_all,
-        name = "DoryCommitmentScheme::compute_tier1_commitment_onehot"
-    )]
     fn process_chunk_onehot(
         setup: &Self::ProverSetup,
         onehot_k: usize,
@@ -350,13 +404,7 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
         let K = onehot_k;
 
         let row_len = DoryGlobals::get_num_columns();
-        let g1_slice =
-            unsafe { std::slice::from_raw_parts(setup.g1_vec.as_ptr(), setup.g1_vec.len()) };
-
-        let g1_bases: Vec<G1Affine> = g1_slice[..row_len]
-            .iter()
-            .map(|g| g.0.into_affine())
-            .collect();
+        let g1_bases = get_cached_g1_affine_bases(setup, row_len);
 
         let mut indices_per_k: Vec<Vec<usize>> = vec![Vec::new(); K];
         for (col_index, k) in chunk.iter().enumerate() {
@@ -404,8 +452,11 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
 
             (tier_2, DoryOpeningProofHint::new(row_commitments))
         } else {
-            let row_commitments: Vec<ArkG1> =
-                chunks.iter().flat_map(|chunk| chunk.clone()).collect();
+            let total_len: usize = chunks.iter().map(|c| c.len()).sum();
+            let mut row_commitments = Vec::with_capacity(total_len);
+            for chunk in chunks {
+                row_commitments.extend_from_slice(chunk);
+            }
 
             let g2_bases = &setup.g2_vec[..row_commitments.len()];
             let tier_2 = <BN254 as PairingCurve>::multi_pair_g2_setup(&row_commitments, g2_bases);
@@ -413,6 +464,11 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
             (tier_2, DoryOpeningProofHint::new(row_commitments))
         }
     }
+
+    // GPU batch_aggregate_chunks removed: the per-independent-pair Miller loop kernel
+    // is algorithmically worse than CPU's accumulated multi-Miller loop with cached
+    // G2Prepared EllCoeffs. GPU paths in ark_pairing.rs still activate for large
+    // batches (>=4096 pairs) via the threshold gate.
 }
 
 impl<C: JoltCurve> ZkEvalCommitment<C> for DoryCommitmentScheme
@@ -454,13 +510,16 @@ where
 /// For CycleMajor layout, returns the point unchanged.
 fn reorder_opening_point_for_layout<F: JoltField>(
     opening_point: &[F::Challenge],
-) -> Vec<F::Challenge> {
+) -> std::borrow::Cow<'_, [F::Challenge]> {
     if DoryGlobals::get_layout() == DoryLayout::AddressMajor {
         let log_T = DoryGlobals::get_T().log_2();
         let log_K = opening_point.len().saturating_sub(log_T);
         let (r_address, r_cycle) = opening_point.split_at(log_K);
-        [r_cycle, r_address].concat()
+        let mut reordered = Vec::with_capacity(opening_point.len());
+        reordered.extend_from_slice(r_cycle);
+        reordered.extend_from_slice(r_address);
+        std::borrow::Cow::Owned(reordered)
     } else {
-        opening_point.to_vec()
+        std::borrow::Cow::Borrowed(opening_point)
     }
 }

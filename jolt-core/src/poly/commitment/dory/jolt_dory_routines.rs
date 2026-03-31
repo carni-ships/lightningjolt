@@ -1,8 +1,9 @@
 //! Custom DoryRoutines implementations using jolt_optimizations
 
 use super::wrappers::{ArkFr, ArkG1, ArkG2};
-use crate::msm::VariableBaseMSM;
 use ark_bn254::{Fr, G1Projective, G2Projective};
+#[cfg(not(feature = "icicle"))]
+use ark_ec::scalar_mul::variable_base::VariableBaseMSM as ArkVariableBaseMSM;
 use ark_ec::CurveGroup;
 use dory::primitives::arithmetic::DoryRoutines;
 use rayon::prelude::*;
@@ -31,9 +32,11 @@ impl DoryRoutines<ArkG1> for JoltG1Routines {
         let raw_scalars: &[Fr] =
             unsafe { std::slice::from_raw_parts(scalars.as_ptr() as *const Fr, scalars.len()) };
 
-        // Only use the first scalars.len() bases to match the scalar count
-        let result = VariableBaseMSM::msm_field_elements(&affines, raw_scalars)
-            .expect("msm_field_elements should not fail");
+        #[cfg(feature = "icicle")]
+        let result = super::icicle_msm::g1_msm(&affines, raw_scalars);
+
+        #[cfg(not(feature = "icicle"))]
+        let result = ArkVariableBaseMSM::msm(&affines, raw_scalars).expect("msm should not fail");
 
         ArkG1(result)
     }
@@ -105,16 +108,22 @@ pub struct JoltG2Routines;
 
 impl DoryRoutines<ArkG2> for JoltG2Routines {
     fn msm(bases: &[ArkG2], scalars: &[ArkFr]) -> ArkG2 {
-        let projective_points: Vec<G2Projective> = bases.iter().map(|w| w.0).collect();
-        let affines = G2Projective::normalize_batch(&projective_points);
+        // SAFETY: ArkG2 is repr(transparent) so has same memory layout as G2Projective
+        let projective_points: &[G2Projective] = unsafe {
+            std::slice::from_raw_parts(bases.as_ptr() as *const G2Projective, bases.len())
+        };
+        let affines = G2Projective::normalize_batch(projective_points);
 
         // SAFETY: ArkFr has same memory layout as Fr
         let raw_scalars: &[Fr] =
             unsafe { std::slice::from_raw_parts(scalars.as_ptr() as *const Fr, scalars.len()) };
 
-        // Only use the first scalars.len() bases to match the scalar count
-        let result = VariableBaseMSM::msm_field_elements(&affines[..scalars.len()], raw_scalars)
-            .expect("msm_field_elements should not fail");
+        #[cfg(feature = "icicle")]
+        let result = super::icicle_msm::g2_msm(&affines[..scalars.len()], raw_scalars);
+
+        #[cfg(not(feature = "icicle"))]
+        let result = ArkVariableBaseMSM::msm(&affines[..scalars.len()], raw_scalars)
+            .expect("msm should not fail");
 
         ArkG2(result)
     }
@@ -128,13 +137,12 @@ impl DoryRoutines<ArkG2> for JoltG2Routines {
         let raw_scalars: &[Fr] =
             unsafe { std::slice::from_raw_parts(scalars.as_ptr() as *const Fr, scalars.len()) };
 
-        // Use GLV-based optimization for G2
-        let base_proj = base.0;
+        // Precompute GLV table ONCE for the fixed base, then reuse for all scalars
+        let precomputed = jolt_optimizations::glv_four_precompute(&[base.0]);
 
-        //TODO (markosg04) this can be optimized heavily?
         let results_proj: Vec<G2Projective> = raw_scalars
             .par_iter()
-            .map(|&scalar| jolt_optimizations::glv_four_scalar_mul_online(scalar, &[base_proj])[0])
+            .map(|&scalar| jolt_optimizations::glv_four_scalar_mul(&precomputed, scalar)[0])
             .collect();
 
         results_proj.into_iter().map(ArkG2).collect()

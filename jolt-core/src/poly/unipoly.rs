@@ -4,11 +4,9 @@ use std::iter::zip;
 use std::ops::{Add, AddAssign, Index, IndexMut, Mul, MulAssign, Sub};
 
 use crate::poly::lagrange_poly::LagrangeHelper;
-use crate::utils::gaussian_elimination::gaussian_elimination;
 use allocative::Allocative;
 use ark_serialize::*;
 use rand_core::{CryptoRng, RngCore};
-use rayon::prelude::*;
 
 use super::multilinear_polynomial::MultilinearPolynomial;
 use crate::utils::small_scalar::SmallScalar;
@@ -34,71 +32,177 @@ impl<F: JoltField> UniPoly<F> {
 
     /// Interpolate a polynomial from its evaluations at the points 0, 1, 2, ..., n-1.
     pub fn from_evals(evals: &[F]) -> Self {
+        match evals.len() {
+            0 => UniPoly {
+                coeffs: vec![F::zero()],
+            },
+            1 => UniPoly {
+                coeffs: vec![evals[0]],
+            },
+            2 => {
+                let c0 = evals[0];
+                let c1 = evals[1] - evals[0];
+                UniPoly {
+                    coeffs: vec![c0, c1],
+                }
+            }
+            3 => Self::from_evals_deg2(evals),
+            4 => Self::from_evals_deg3(evals),
+            _ => UniPoly {
+                coeffs: Self::newton_interpolation(evals),
+            },
+        }
+    }
+
+    /// Degree-2 interpolation from evaluations at x = 0, 1, 2.
+    /// Uses Newton forward differences to avoid Gaussian elimination.
+    fn from_evals_deg2(evals: &[F]) -> Self {
+        let (e0, e1, e2) = (evals[0], evals[1], evals[2]);
+        let d1 = e1 - e0;
+        let d2 = e2 - e1 - d1; // e2 - 2*e1 + e0
+        let inv2 = F::from_u64(2).inverse().unwrap();
+        let c2 = d2 * inv2;
+        let c1 = d1 - c2;
         UniPoly {
-            coeffs: Self::vandermonde_interpolation(evals),
+            coeffs: vec![e0, c1, c2],
+        }
+    }
+
+    /// Degree-3 interpolation from evaluations at x = 0, 1, 2, 3.
+    /// Uses Newton forward differences to avoid Gaussian elimination.
+    fn from_evals_deg3(evals: &[F]) -> Self {
+        let (e0, e1, e2, e3) = (evals[0], evals[1], evals[2], evals[3]);
+        let d1 = e1 - e0;
+        let d2 = e2 - e1 - d1; // Δ² = e2 - 2*e1 + e0
+        let d12 = e2 - e1;
+        let d23 = e3 - e2;
+        let d3 = d23 - d12 - (d12 - d1); // Δ³ = e3 - 3*e2 + 3*e1 - e0
+        let inv6 = F::from_u64(6).inverse().unwrap();
+        let inv2 = inv6 + inv6 + inv6; // 3/6 = 1/2
+        let inv3 = inv6 + inv6; // 2/6 = 1/3
+        let c3 = d3 * inv6; // Δ³/6
+        let c2 = d2 * inv2 - d3 * inv2; // Δ²/2 - Δ³/2
+        let c1 = d1 - d2 * inv2 + d3 * inv3; // Δ¹ - Δ²/2 + Δ³/3
+        UniPoly {
+            coeffs: vec![e0, c1, c2, c3],
         }
     }
 
     /// Interpolate a polynomial `p(x)` from its evaluations at even points `0, 2, 3, ..., n-1`
     /// and a hint `p(0) + p(1)`.
     pub fn from_evals_and_hint(hint: F, evals: &[F]) -> Self {
-        let mut evals = evals.to_vec();
         let eval_at_1 = hint - evals[0];
-        evals.insert(1, eval_at_1);
-        Self::from_evals(&evals)
+        match evals.len() {
+            1 => Self::from_evals(&[evals[0], eval_at_1]),
+            2 => Self::from_evals(&[evals[0], eval_at_1, evals[1]]),
+            3 => Self::from_evals(&[evals[0], eval_at_1, evals[1], evals[2]]),
+            _ => {
+                let mut full = Vec::with_capacity(evals.len() + 1);
+                full.push(evals[0]);
+                full.push(eval_at_1);
+                full.extend_from_slice(&evals[1..]);
+                Self::from_evals(&full)
+            }
+        }
     }
 
     /// Interpolates a polynomial from its evaluations on `[0, 1, ..., degree - 1, inf]`.
     pub fn from_evals_toom(evals: &[F]) -> Self {
-        let n = evals.len();
-
-        let mut interpol_mat: Vec<Vec<F>> = Vec::with_capacity(n);
-
-        // Iterate over all finite x values.
-        for i in 0..n - 1 {
-            let mut row = Vec::with_capacity(n);
-            row.push(F::one());
-            let x = F::from_u64(i as u64);
-            row.push(x);
-            for j in 2..n {
-                row.push(row[j - 1] * x);
+        match evals.len() {
+            3 => {
+                // Degree 2: f(0), f(1), f(∞)
+                let (e0, e1, e_inf) = (evals[0], evals[1], evals[2]);
+                return UniPoly {
+                    coeffs: vec![e0, e1 - e0 - e_inf, e_inf],
+                };
             }
-            row.push(evals[i]);
-            interpol_mat.push(row);
+            4 => {
+                // Degree 3: f(0), f(1), f(2), f(∞)
+                let (e0, e1, e2, e_inf) = (evals[0], evals[1], evals[2], evals[3]);
+                let inv2 = F::from_u64(2).inverse().unwrap();
+                let e_inf_6 = e_inf + e_inf + e_inf + e_inf + e_inf + e_inf;
+                let c2 = (e2 + e0 - e1 - e1 - e_inf_6) * inv2;
+                let c1 = e1 - e0 - e_inf - c2;
+                return UniPoly {
+                    coeffs: vec![e0, c1, c2, e_inf],
+                };
+            }
+            _ => {}
         }
 
-        // Compute the row for x=infinity.
-        let mut row = Vec::with_capacity(n);
-        for _ in 0..n - 1 {
-            row.push(F::zero());
-        }
-        row.push(F::one());
-        row.push(evals[n - 1]);
-        interpol_mat.push(row);
+        // The leading coefficient equals the evaluation at infinity.
+        let n = evals.len();
+        let leading = evals[n - 1];
 
-        UniPoly {
-            coeffs: gaussian_elimination(&mut interpol_mat),
+        // Subtract leading * x^{n-1} from the finite evaluations to reduce
+        // to a degree-(n-2) interpolation at points 0, 1, ..., n-2.
+        let mut reduced = Vec::with_capacity(n - 1);
+        for i in 0..n - 1 {
+            let x_pow = Self::pow_u64(i as u64, n - 1);
+            reduced.push(evals[i] - leading * x_pow);
         }
+
+        let mut coeffs = Self::newton_interpolation(&reduced);
+        coeffs.push(leading);
+        UniPoly { coeffs }
     }
 
-    fn vandermonde_interpolation(evals: &[F]) -> Vec<F> {
+    /// O(n²) interpolation via Newton divided differences for equispaced points 0,1,...,n-1.
+    /// Replaces O(n³) Gaussian elimination for the general case.
+    fn newton_interpolation(evals: &[F]) -> Vec<F> {
         let n = evals.len();
-        let xs: Vec<F> = (0..evals.len()).map(|x| F::from_u64(x as u64)).collect();
-
-        let mut vandermonde: Vec<Vec<F>> = Vec::with_capacity(n);
-        for i in 0..n {
-            let mut row = Vec::with_capacity(n);
-            let x = xs[i];
-            row.push(F::one());
-            row.push(x);
-            for j in 2..n {
-                row.push(row[j - 1] * x);
-            }
-            row.push(evals[i]);
-            vandermonde.push(row);
+        if n == 0 {
+            return vec![F::zero()];
+        }
+        if n == 1 {
+            return vec![evals[0]];
         }
 
-        gaussian_elimination(&mut vandermonde)
+        // Step 1: Compute divided differences for equispaced points.
+        // After processing, dd[k] = f[0, 1, ..., k] (k-th divided difference).
+        let mut dd: Vec<F> = evals.to_vec();
+        for k in 1..n {
+            for i in (k..n).rev() {
+                dd[i] = dd[i] - dd[i - 1];
+            }
+            let inv_k = F::from_u64(k as u64).inverse().unwrap();
+            for i in k..n {
+                dd[i] *= inv_k;
+            }
+        }
+
+        // Step 2: Convert Newton basis to monomial basis using Horner's method.
+        // p(x) = dd[0] + dd[1]*x + dd[2]*x*(x-1) + dd[3]*x*(x-1)*(x-2) + ...
+        let mut coeffs = vec![F::zero(); n];
+        coeffs[0] = dd[n - 1];
+        for k in (0..n - 1).rev() {
+            let shift = F::from_u64(k as u64);
+            for i in (1..n).rev() {
+                coeffs[i] = coeffs[i - 1] - shift * coeffs[i];
+            }
+            coeffs[0] = dd[k] - shift * coeffs[0];
+        }
+
+        coeffs
+    }
+
+    /// Compute base^exp as a field element using repeated squaring.
+    fn pow_u64(base: u64, exp: usize) -> F {
+        if exp == 0 {
+            return F::one();
+        }
+        let mut result = F::one();
+        let b = F::from_u64(base);
+        let mut current = b;
+        let mut e = exp;
+        while e > 0 {
+            if e & 1 == 1 {
+                result *= current;
+            }
+            current = current * current;
+            e >>= 1;
+        }
+        result
     }
 
     /// Divide self by another polynomial, and returns the
@@ -162,7 +266,6 @@ impl<F: JoltField> UniPoly<F> {
         (0..self.coeffs.len()).map(|i| self.coeffs[i]).sum()
     }
 
-    #[tracing::instrument(skip_all, name = "UniPoly::evaluate")]
     pub fn evaluate<C>(&self, r: &C) -> F
     where
         C: Copy + Send + Sync + Into<F> + ChallengeFieldOps<F>,
@@ -171,7 +274,6 @@ impl<F: JoltField> UniPoly<F> {
         Self::eval_with_coeffs(&self.coeffs, r)
     }
 
-    #[tracing::instrument(skip_all, name = "UniPoly::eval_with_coeffs")]
     pub fn eval_with_coeffs<C>(coeffs: &[F], r: &C) -> F
     where
         C: Copy + Send + Sync + Into<F> + ChallengeFieldOps<F>,
@@ -252,7 +354,9 @@ impl<F: JoltField> UniPoly<F> {
     }
 
     pub fn compress(&self) -> CompressedUniPoly<F> {
-        let coeffs_except_linear_term = [&self.coeffs[..1], &self.coeffs[2..]].concat();
+        let mut coeffs_except_linear_term = Vec::with_capacity(self.coeffs.len() - 1);
+        coeffs_except_linear_term.push(self.coeffs[0]);
+        coeffs_except_linear_term.extend_from_slice(&self.coeffs[2..]);
         debug_assert_eq!(coeffs_except_linear_term.len() + 1, self.coeffs.len());
         CompressedUniPoly {
             coeffs_except_linear_term,
@@ -268,7 +372,9 @@ impl<F: JoltField> UniPoly<F> {
     }
 
     pub fn shift_coefficients(&mut self, rhs: &F) {
-        self.coeffs.par_iter_mut().for_each(|c| *c += *rhs);
+        for c in &mut self.coeffs {
+            *c += *rhs;
+        }
     }
 
     /// This function computes a cubic polynomial s(X), given the following conditions:
@@ -382,18 +488,23 @@ impl<F: JoltField> Sub for UniPoly<F> {
 impl<F: JoltField> Mul<F> for UniPoly<F> {
     type Output = Self;
 
-    fn mul(self, rhs: F) -> Self {
-        let iter = self.coeffs.into_par_iter();
-        Self::from_coeff(iter.map(|c| c * rhs).collect::<Vec<_>>())
+    fn mul(mut self, rhs: F) -> Self {
+        // UniPoly coefficients are typically degree 2-5; sequential is faster than par_iter
+        for c in &mut self.coeffs {
+            *c *= rhs;
+        }
+        self
     }
 }
 
 impl<F: JoltField> Mul<&F> for UniPoly<F> {
     type Output = Self;
 
-    fn mul(self, rhs: &F) -> Self {
-        let iter = self.coeffs.into_par_iter();
-        Self::from_coeff(iter.map(|c| c * *rhs).collect::<Vec<_>>())
+    fn mul(mut self, rhs: &F) -> Self {
+        for c in &mut self.coeffs {
+            *c *= *rhs;
+        }
+        self
     }
 }
 
@@ -421,7 +532,9 @@ impl<F: JoltField> IndexMut<usize> for UniPoly<F> {
 
 impl<F: JoltField> MulAssign<&F> for UniPoly<F> {
     fn mul_assign(&mut self, rhs: &F) {
-        self.coeffs.par_iter_mut().for_each(|c| *c *= *rhs);
+        for c in &mut self.coeffs {
+            *c *= *rhs;
+        }
     }
 }
 
@@ -585,6 +698,76 @@ mod tests {
                     assert_eq!(dividend, prod)
                 }
             }
+        }
+    }
+
+    #[test]
+    fn test_newton_interpolation_degree5() {
+        // p(x) = 2x^4 + x^3 - 3x^2 + 5x + 7
+        let gt_poly = UniPoly::<Fr>::from_coeff(vec![
+            7.into(),
+            5.into(),
+            -Fr::from_u64(3),
+            1.into(),
+            2.into(),
+        ]);
+        let evals: Vec<Fr> = (0..5)
+            .map(|x| gt_poly.evaluate::<Fr>(&Fr::from_u64(x)))
+            .collect();
+        let poly = UniPoly::from_evals(&evals);
+        assert_eq!(poly.coeffs.len(), gt_poly.coeffs.len());
+        for i in 0..poly.coeffs.len() {
+            assert_eq!(poly.coeffs[i], gt_poly.coeffs[i]);
+        }
+    }
+
+    #[test]
+    fn test_newton_interpolation_degree8() {
+        let rng = &mut ChaCha20Rng::from_seed([42u8; 32]);
+        // random(9) => 9 coefficients => degree 8
+        let gt_poly = UniPoly::<Fr>::random(9, rng);
+        let evals: Vec<Fr> = (0..9)
+            .map(|x| gt_poly.evaluate::<Fr>(&Fr::from_u64(x)))
+            .collect();
+        let poly = UniPoly::from_evals(&evals);
+        for i in 0..poly.coeffs.len() {
+            assert_eq!(poly.coeffs[i], gt_poly.coeffs[i]);
+        }
+    }
+
+    #[test]
+    fn test_toom_interpolation_degree8() {
+        let rng = &mut ChaCha20Rng::from_seed([99u8; 32]);
+        // random(9) => 9 coefficients => degree 8
+        let gt_poly = UniPoly::<Fr>::random(9, rng);
+        let degree = 8;
+        let finite_evals: Vec<Fr> = (0..degree)
+            .map(|x| gt_poly.evaluate::<Fr>(&Fr::from_u64(x)))
+            .collect();
+        let eval_at_infinity = *gt_poly.coeffs.last().unwrap();
+        let toom_evals: Vec<Fr> = [finite_evals, vec![eval_at_infinity]].concat();
+        let poly = UniPoly::from_evals_toom(&toom_evals);
+        assert_eq!(poly.coeffs.len(), gt_poly.coeffs.len());
+        for i in 0..poly.coeffs.len() {
+            assert_eq!(poly.coeffs[i], gt_poly.coeffs[i]);
+        }
+    }
+
+    #[test]
+    fn test_toom_interpolation_degree16() {
+        let rng = &mut ChaCha20Rng::from_seed([77u8; 32]);
+        // random(17) => 17 coefficients => degree 16
+        let gt_poly = UniPoly::<Fr>::random(17, rng);
+        let degree = 16;
+        let finite_evals: Vec<Fr> = (0..degree)
+            .map(|x| gt_poly.evaluate::<Fr>(&Fr::from_u64(x)))
+            .collect();
+        let eval_at_infinity = *gt_poly.coeffs.last().unwrap();
+        let toom_evals: Vec<Fr> = [finite_evals, vec![eval_at_infinity]].concat();
+        let poly = UniPoly::from_evals_toom(&toom_evals);
+        assert_eq!(poly.coeffs.len(), gt_poly.coeffs.len());
+        for i in 0..poly.coeffs.len() {
+            assert_eq!(poly.coeffs[i], gt_poly.coeffs[i]);
         }
     }
 

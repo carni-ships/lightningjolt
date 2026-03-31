@@ -84,11 +84,13 @@ impl<const E: Endianness, F: JoltField> OpeningPoint<E, F> {
     where
         F: Clone,
     {
-        let mut reversed = self.r.clone();
-        if E != SWAPPED_E {
+        if E == SWAPPED_E {
+            OpeningPoint::<SWAPPED_E, F>::new(self.r.clone())
+        } else {
+            let mut reversed = self.r.clone();
             reversed.reverse();
+            OpeningPoint::<SWAPPED_E, F>::new(reversed)
         }
-        OpeningPoint::<SWAPPED_E, F>::new(reversed)
     }
 }
 
@@ -506,7 +508,6 @@ where
         self.insert_or_alias_opening(key, point, claim);
     }
 
-    #[tracing::instrument(skip_all, name = "ProverOpeningAccumulator::append_sparse")]
     pub fn append_sparse(
         &mut self,
         polynomials: Vec<CommittedPolynomial>,

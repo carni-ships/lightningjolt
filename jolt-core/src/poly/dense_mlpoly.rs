@@ -114,7 +114,6 @@ impl<F: JoltField> DensePolynomial<F> {
         self.len = n;
     }
 
-    #[tracing::instrument(skip_all)]
     pub fn bound_poly_var_top_zero_optimized(&mut self, r: &F::Challenge) {
         let n = self.len() / 2;
 
@@ -194,7 +193,6 @@ impl<F: JoltField> DensePolynomial<F> {
     }
 
     /// Note: does not truncate
-    #[tracing::instrument(skip_all)]
     pub fn bound_poly_var_bot(&mut self, r: &F::Challenge) {
         let n = self.len() / 2;
         for i in 0..n {
@@ -313,9 +311,9 @@ impl<F: JoltField> DensePolynomial<F> {
         C: Copy + Send + Sync + Into<F> + ChallengeFieldOps<F>,
         F: FieldChallengeOps<C>,
     {
-        // r is expected to be big endinan
+        // r is expected to be big endian
         // r[0] is the most significant digit
-        let mut current = self.Z.clone();
+        let mut current = self.Z[..self.len].to_vec();
         let m = r.len();
         for i in (0..m).rev() {
             let stride = 1 << i;
@@ -347,31 +345,43 @@ impl<F: JoltField> DensePolynomial<F> {
         C: Copy + Send + Sync + Into<F> + ChallengeFieldOps<F>,
         F: FieldChallengeOps<C>,
     {
-        let mut current: Vec<_> = self.Z.par_iter().cloned().collect();
+        let mut current: Vec<F> = self.Z[..self.len].to_vec();
         let m = r.len();
-        // Invoking the same parallelisation structure
-        // currently in evaluating in Lagrange bases.
-        // See eq_poly::evals()
         for i in (0..m).rev() {
             let stride = 1 << i;
             let r_val = r[m - 1 - i];
             let (evals_left, evals_right) = current.split_at_mut(stride);
             let (evals_right, _) = evals_right.split_at_mut(stride);
 
-            evals_left
-                .par_iter_mut()
-                .zip(evals_right.par_iter())
-                .for_each(|(x, y)| {
+            // Fall back to serial for small strides where rayon overhead dominates
+            if stride < 4096 {
+                for (x, y) in evals_left.iter_mut().zip(evals_right.iter()) {
                     let slope = *y - *x;
                     if slope.is_zero() {
-                        return;
+                        continue;
                     }
                     if slope.is_one() {
                         *x += r_val.into();
                     } else {
                         *x += r_val * slope;
                     }
-                });
+                }
+            } else {
+                evals_left
+                    .par_iter_mut()
+                    .zip(evals_right.par_iter())
+                    .for_each(|(x, y)| {
+                        let slope = *y - *x;
+                        if slope.is_zero() {
+                            return;
+                        }
+                        if slope.is_one() {
+                            *x += r_val.into();
+                        } else {
+                            *x += r_val * slope;
+                        }
+                    });
+            }
         }
         current[0]
     }
@@ -427,54 +437,81 @@ impl<F: JoltField> DensePolynomial<F> {
             .max()
             .unwrap();
 
-        let result: Vec<F> = (0..max_length)
-            .into_par_iter()
-            .map(|i| {
-                let mut acc = F::zero();
-                for (coeff, poly) in coefficients.iter().zip(polynomials.iter()) {
-                    if i < poly.original_len() {
-                        match poly {
-                            MultilinearPolynomial::LargeScalars(p) => {
-                                acc += p.evals_ref()[i].mul_01_optimized(*coeff);
-                            }
-                            MultilinearPolynomial::U8Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            MultilinearPolynomial::U16Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            MultilinearPolynomial::U32Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            MultilinearPolynomial::U64Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            MultilinearPolynomial::I64Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            MultilinearPolynomial::U128Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            MultilinearPolynomial::I128Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            MultilinearPolynomial::S128Scalars(p) => {
-                                acc += p.coeffs[i].field_mul(*coeff);
-                            }
-                            _ => unreachable!(),
-                        }
-                    }
+        // Iterate poly-by-poly so enum dispatch happens once per polynomial,
+        // not once per element. Each pass reads one polynomial contiguously.
+        let mut result: Vec<F> = unsafe_allocate_zero_vec(max_length);
+        for (coeff, poly) in coefficients.iter().zip(polynomials.iter()) {
+            let coeff = *coeff;
+            match poly {
+                MultilinearPolynomial::LargeScalars(p) => {
+                    let slice = p.evals_ref();
+                    result[..slice.len()]
+                        .par_iter_mut()
+                        .zip(slice.par_iter())
+                        .for_each(|(r, v)| *r += v.mul_01_optimized(coeff));
                 }
-                acc
-            })
-            .collect();
+                MultilinearPolynomial::U8Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                MultilinearPolynomial::U16Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                MultilinearPolynomial::U32Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                MultilinearPolynomial::U64Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                MultilinearPolynomial::I64Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                MultilinearPolynomial::U128Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                MultilinearPolynomial::I128Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                MultilinearPolynomial::S128Scalars(p) => {
+                    result[..p.coeffs.len()]
+                        .par_iter_mut()
+                        .zip(p.coeffs.par_iter())
+                        .for_each(|(r, v)| *r += v.field_mul(coeff));
+                }
+                _ => unreachable!(),
+            }
+        }
         DensePolynomial::new(result)
     }
 }
 
 impl<F: JoltField> Clone for DensePolynomial<F> {
     fn clone(&self) -> Self {
-        Self::new(self.Z[0..self.len].to_vec())
+        DensePolynomial {
+            num_vars: self.num_vars,
+            len: self.len,
+            Z: self.Z[..self.len].to_vec(),
+        }
     }
 }
 
@@ -507,37 +544,24 @@ impl<F: JoltField> PolynomialEvaluation<F> for DensePolynomial<F> {
         let (r2, r1) = r.split_at(m);
         let (eq_one, eq_two) = rayon::join(|| EqPolynomial::evals(r2), || EqPolynomial::evals(r1));
 
+        let eq_two_len = eq_two.len();
         let evals = (0..eq_one.len())
             .into_par_iter()
             .map(|x1| {
                 let eq1_val = eq_one[x1];
-                let inner_sums = (0..eq_two.len())
-                    .into_par_iter()
-                    .filter_map(|x2| {
-                        let eq2_val = eq_two[x2];
-                        let idx = x1 * eq_two.len() + x2;
-                        let partial: Vec<F> = polys
-                            .iter()
-                            .map(|poly| {
-                                let coeff = poly.Z[idx];
-                                OptimizedMul::mul_01_optimized(eq2_val, coeff)
-                            })
-                            .collect();
-                        Some(partial)
-                    })
-                    .reduce(
-                        || vec![F::zero(); num_polys],
-                        |mut acc, item| {
-                            for i in 0..num_polys {
-                                acc[i] += item[i];
-                            }
-                            acc
-                        },
-                    );
+                let base = x1 * eq_two_len;
+                let mut inner_sums = vec![F::zero(); num_polys];
+                for x2 in 0..eq_two_len {
+                    let eq2_val = eq_two[x2];
+                    let idx = base + x2;
+                    for (k, poly) in polys.iter().enumerate() {
+                        inner_sums[k] += OptimizedMul::mul_01_optimized(eq2_val, poly.Z[idx]);
+                    }
+                }
+                for s in inner_sums.iter_mut() {
+                    *s = OptimizedMul::mul_01_optimized(eq1_val, *s);
+                }
                 inner_sums
-                    .into_iter()
-                    .map(|s| OptimizedMul::mul_01_optimized(eq1_val, s))
-                    .collect::<Vec<_>>()
             })
             .reduce(
                 || vec![F::zero(); num_polys],

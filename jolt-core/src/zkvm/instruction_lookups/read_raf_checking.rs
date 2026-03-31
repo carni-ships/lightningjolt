@@ -859,6 +859,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
             let combined_val = self.combined_val_polynomial.as_ref().unwrap();
             let n_evals = ra_polys.len() + 1;
 
+            let num_x_in_bits = self.eq_r_reduction.E_in_current_len().log_2();
             let mut sum_evals = self
                 .eq_r_reduction
                 .E_out_current()
@@ -870,7 +871,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
                     let mut evals_acc = vec![F::UnreducedProductAccum::zero(); n_evals];
 
                     for (j_in, e_in) in self.eq_r_reduction.E_in_current().iter().enumerate() {
-                        let j = self.eq_r_reduction.group_index(j_out, j_in);
+                        let j = (j_out << num_x_in_bits) | j_in;
 
                         let Some((val_pair, ra_pairs)) = pairs.split_first_mut() else {
                             unreachable!()
@@ -959,19 +960,23 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
                 self.init_log_t_rounds(self.params.gamma, self.params.gamma_sqr);
             }
         } else {
-            // log(T) rounds
+            // log(T) rounds — three independent bind operations run in parallel.
+            let eq = &mut self.eq_r_reduction;
+            let val = self.combined_val_polynomial.as_mut().unwrap();
+            let ra = self.ra_polys.as_mut().unwrap();
 
-            self.eq_r_reduction.bind(r_j);
-            self.combined_val_polynomial
-                .as_mut()
-                .unwrap()
-                .bind_parallel(r_j, BindingOrder::LowToHigh);
-
-            self.ra_polys
-                .as_mut()
-                .unwrap()
-                .iter_mut()
-                .for_each(|poly| poly.bind_parallel(r_j, BindingOrder::LowToHigh));
+            rayon::join(
+                || eq.bind(r_j),
+                || {
+                    rayon::join(
+                        || val.bind_parallel(r_j, BindingOrder::LowToHigh),
+                        || {
+                            ra.iter_mut()
+                                .for_each(|poly| poly.bind_parallel(r_j, BindingOrder::LowToHigh))
+                        },
+                    );
+                },
+            );
         }
     }
 

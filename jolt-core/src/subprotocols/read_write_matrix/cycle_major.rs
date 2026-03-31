@@ -298,7 +298,6 @@ impl<F: JoltField, E: CycleMajorMatrixEntry<F>> ReadWriteMatrixCycleMajor<F, E> 
 
     /// Binds a cycle variable of the ra and Val polynomials represented by
     /// this `ReadWriteMatrixCycleMajor` to the random challenge `r`.
-    #[tracing::instrument(skip_all, name = "ReadWriteMatrixCycleMajor::bind")]
     pub fn bind(&mut self, r: F::Challenge) {
         let ra_lookup_table = self.ra_lookup_table.as_ref();
         let wa_lookup_table = self.wa_lookup_table.as_ref();

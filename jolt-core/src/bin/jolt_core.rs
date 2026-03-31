@@ -1,5 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[path = "../../benches/e2e_profiling.rs"]
 mod e2e_profiling;
 use e2e_profiling::{benchmarks, master_benchmark, BenchType};

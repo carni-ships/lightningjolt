@@ -132,9 +132,7 @@ use allocative::FlameGraphBuilder;
 use common::jolt_device::MemoryConfig;
 use itertools::{zip_eq, Itertools};
 use rayon::prelude::*;
-use tracer::{
-    emulator::memory::Memory, instruction::Cycle, ChunksIterator, JoltDevice, LazyTraceIterator,
-};
+use tracer::{emulator::memory::Memory, instruction::Cycle, JoltDevice, LazyTraceIterator};
 
 use crate::curve::JoltCurve;
 #[cfg(feature = "zk")]
@@ -714,14 +712,15 @@ where
             );
 
             // Tier 1: Compute row commitments for each polynomial
-            let mut row_commitments: Vec<Vec<PCS::ChunkState>> = vec![vec![]; num_rows];
+            // Use the already-materialized padded trace with par_chunks for better
+            // parallel scheduling (vs par_bridge over lazy_trace which re-executes
+            // the emulator and serializes chunk production).
+            let num_chunks = T / row_len;
+            let mut row_commitments: Vec<Vec<PCS::ChunkState>> = vec![vec![]; num_chunks];
 
-            self.lazy_trace
-                .clone()
-                .pad_using(T, |_| Cycle::NoOp)
-                .iter_chunks(row_len)
-                .zip(row_commitments.iter_mut())
-                .par_bridge()
+            self.trace
+                .par_chunks(row_len)
+                .zip(row_commitments.par_iter_mut())
                 .for_each(|(chunk, row_tier1_commitments)| {
                     let res: Vec<_> = polys
                         .par_iter()
@@ -729,7 +728,7 @@ where
                             poly.stream_witness_and_commit_rows::<_, PCS>(
                                 &self.preprocessing.generators,
                                 &self.preprocessing.shared,
-                                &chunk,
+                                chunk,
                                 &self.one_hot_params,
                             )
                         })
@@ -738,29 +737,28 @@ where
                 });
 
             // Transpose: row_commitments[row][poly] -> tier1_per_poly[poly][row]
-            let tier1_per_poly: Vec<Vec<PCS::ChunkState>> = (0..polys.len())
-                .into_par_iter()
-                .map(|poly_idx| {
-                    row_commitments
-                        .iter()
-                        .flat_map(|row| row.get(poly_idx).cloned())
-                        .collect()
-                })
+            // Move data instead of cloning — each Vec is consumed, not copied.
+            let mut tier1_per_poly: Vec<Vec<PCS::ChunkState>> = (0..polys.len())
+                .map(|_| Vec::with_capacity(num_chunks))
                 .collect();
+            for row in row_commitments {
+                for (poly_idx, chunk_state) in row.into_iter().enumerate() {
+                    tier1_per_poly[poly_idx].push(chunk_state);
+                }
+            }
 
             // Tier 2: Compute final commitments from tier1 commitments
-            let (commitments, hints): (Vec<_>, Vec<_>) = tier1_per_poly
-                .into_par_iter()
-                .zip(&polys)
-                .map(|(tier1_commitments, poly)| {
-                    let onehot_k = poly.get_onehot_k(&self.one_hot_params);
-                    PCS::aggregate_chunks(
-                        &self.preprocessing.generators,
-                        onehot_k,
-                        &tier1_commitments,
-                    )
-                })
-                .unzip();
+            let onehot_ks: Vec<Option<usize>> = polys
+                .iter()
+                .map(|poly| poly.get_onehot_k(&self.one_hot_params))
+                .collect();
+            let (commitments, hints): (Vec<_>, Vec<_>) = PCS::batch_aggregate_chunks(
+                &self.preprocessing.generators,
+                tier1_per_poly,
+                &onehot_ks,
+            )
+            .into_iter()
+            .unzip();
 
             let hint_map = HashMap::from_iter(zip_eq(polys, hints));
             (commitments, hint_map)

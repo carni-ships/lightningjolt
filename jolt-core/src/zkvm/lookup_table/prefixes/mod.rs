@@ -340,7 +340,6 @@ impl Prefixes {
     /// prefix, incorporating the two random challenges `r_x` and `r_y` received
     /// since the last update.
     /// This function updates all the prefix checkpoints.
-    #[tracing::instrument(skip_all)]
     pub fn update_checkpoints<const XLEN: usize, F, C>(
         checkpoints: &mut [PrefixCheckpoint<F>],
         r_x: C,

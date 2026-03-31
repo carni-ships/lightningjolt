@@ -1,0 +1,2 @@
+cargo:rustc-link-search=native=/tmp/constantine
+cargo:rustc-link-lib=static=ctt_bn254_pairing

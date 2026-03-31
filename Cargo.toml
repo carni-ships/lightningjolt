@@ -88,6 +88,9 @@ members = [
     "examples/sig-recovery/guest",
     "zklean-extractor",
     "z3-verifier",
+    "persistia-guest",
+    "persistia-host",
+    "Jolteon",
 ]
 
 [features]
@@ -126,6 +129,7 @@ lto = "off"
 [profile.release]
 debug = 1
 lto = "fat"
+codegen-units = 1
 
 [profile.build-fast]
 inherits = "release"
@@ -167,7 +171,7 @@ sha3 = "0.10.8"
 blake2 = "0.10"
 blake3 = { version = "1.5.0" }
 jolt-optimizations = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
-dory = { package = "dory-pcs", version = "0.3.0", features = ["backends", "cache", "disk-persistence"] }
+dory = { package = "dory-pcs", path = "third-party/dory-pcs", features = ["backends", "cache", "disk-persistence"] }
 
 # Core Utilities
 clap = { version = "4.5.4", features = ["derive"] }
@@ -281,3 +285,8 @@ jolt-inlines-blake3 = { path = "./jolt-inlines/blake3", default-features = false
 jolt-inlines-bigint = { path = "./jolt-inlines/bigint", default-features = false }
 jolt-inlines-secp256k1 = { path = "./jolt-inlines/secp256k1", default-features = false }
 jolt-inlines-grumpkin = { path = "./jolt-inlines/grumpkin", default-features = false }
+
+# ICICLE accelerated crypto (optional)
+icicle-runtime = { git = "https://github.com/ingonyama-zk/icicle.git", rev = "625532a" }
+icicle-core = { git = "https://github.com/ingonyama-zk/icicle.git", rev = "625532a" }
+icicle-bn254 = { git = "https://github.com/ingonyama-zk/icicle.git", rev = "625532a", default-features = false }

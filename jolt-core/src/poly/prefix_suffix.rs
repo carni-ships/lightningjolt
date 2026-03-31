@@ -261,7 +261,6 @@ impl<F: JoltField, const ORDER: usize> PrefixSuffixDecomposition<F, ORDER> {
     /// P array is defined as P[x] = prefix(x)
     /// Read more about prefix-suffix argument in Appendix A of the paper
     /// https://eprint.iacr.org/2025/611.pdf
-    #[tracing::instrument(skip_all, name = "PrefixSuffix::init_P")]
     pub fn init_P(&mut self, prefix_registry: &mut PrefixRegistry<F>) {
         self.P = self
             .poly

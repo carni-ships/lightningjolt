@@ -27,11 +27,11 @@ impl Blake2bTranscript {
     /// Gives the hasher object with the running seed and index added
     /// To load hash you must call finalize, after appending u8 vectors
     fn hasher(&self) -> Blake2b256 {
-        let mut packed = [0_u8; 28].to_vec();
-        packed.append(&mut self.n_rounds.to_be_bytes().to_vec());
+        let mut packed = [0u8; 32];
+        packed[28..].copy_from_slice(&self.n_rounds.to_be_bytes());
         Blake2b256::new()
             .chain_update(self.state)
-            .chain_update(&packed)
+            .chain_update(packed)
     }
 
     // Loads arbitrary byte lengths using ceil(out/32) invocations of 32 byte randoms
@@ -45,7 +45,7 @@ impl Blake2bTranscript {
             remaining_len -= 32;
         }
         // We load a full 32 byte random region
-        let mut full_rand = vec![0_u8; 32];
+        let mut full_rand = [0u8; 32];
         self.challenge_bytes32(&mut full_rand);
         // Then only clone the first bits of this random region to perfectly fill out
         out[start..start + remaining_len].clone_from_slice(&full_rand[0..remaining_len]);
@@ -79,13 +79,9 @@ impl Transcript for Blake2bTranscript {
     fn new(label: &'static [u8]) -> Self {
         // Hash in the label
         assert!(label.len() < 33);
-        let hasher = if label.len() == 32 {
-            Blake2b256::new().chain_update(label)
-        } else {
-            let zeros = vec![0_u8; 32 - label.len()];
-            Blake2b256::new().chain_update(label).chain_update(zeros)
-        };
-        let out = hasher.finalize();
+        let mut padded = [0u8; 32];
+        padded[..label.len()].copy_from_slice(label);
+        let out = Blake2b256::new().chain_update(padded).finalize();
 
         Self {
             state: out.into(),
@@ -110,13 +106,9 @@ impl Transcript for Blake2bTranscript {
         // Labels must fit into one EVM word, right-padded with zeros
         // (matches Solidity's bytes32 string casting)
         assert!(label.len() < 33);
-        let hasher = if label.len() == 32 {
-            self.hasher().chain_update(label)
-        } else {
-            let mut packed = label.to_vec();
-            packed.append(&mut vec![0_u8; 32 - label.len()]);
-            self.hasher().chain_update(packed)
-        };
+        let mut padded = [0u8; 32];
+        padded[..label.len()].copy_from_slice(label);
+        let hasher = self.hasher().chain_update(padded);
         self.update_state(hasher.finalize().into());
     }
 
@@ -128,9 +120,9 @@ impl Transcript for Blake2bTranscript {
 
     fn raw_append_u64(&mut self, x: u64) {
         // Allocate into a 32 byte region (left-padded for EVM uint256 compatibility)
-        let mut packed = [0_u8; 24].to_vec();
-        packed.append(&mut x.to_be_bytes().to_vec());
-        let hasher = self.hasher().chain_update(packed.clone());
+        let mut packed = [0u8; 32];
+        packed[24..].copy_from_slice(&x.to_be_bytes());
+        let hasher = self.hasher().chain_update(packed);
         self.update_state(hasher.finalize().into());
     }
 
@@ -140,17 +132,17 @@ impl Transcript for Blake2bTranscript {
         // Serialize uncompressed gives the scalar in LE byte order which is not
         // a natural representation in the EVM for scalar math so we reverse
         // to get an EVM compatible version.
-        buf = buf.into_iter().rev().collect();
+        buf.reverse();
         self.raw_append_bytes(&buf);
     }
 
     // === Challenge generation methods ===
 
     fn challenge_u128(&mut self) -> u128 {
-        let mut buf = vec![0u8; 16];
+        let mut buf = [0u8; 16];
         self.challenge_bytes(&mut buf);
-        buf = buf.into_iter().rev().collect();
-        u128::from_be_bytes(buf.try_into().unwrap())
+        buf.reverse();
+        u128::from_be_bytes(buf)
     }
 
     fn challenge_scalar<F: JoltField>(&mut self) -> F {
@@ -159,10 +151,9 @@ impl Transcript for Blake2bTranscript {
     }
 
     fn challenge_scalar_128_bits<F: JoltField>(&mut self) -> F {
-        let mut buf = vec![0u8; 16];
+        let mut buf = [0u8; 16];
         self.challenge_bytes(&mut buf);
-
-        buf = buf.into_iter().rev().collect();
+        buf.reverse();
         F::from_bytes(&buf)
     }
 
@@ -196,12 +187,11 @@ impl Transcript for Blake2bTranscript {
     }
 
     fn challenge_scalar_powers_optimized<F: JoltField>(&mut self, len: usize) -> Vec<F> {
-        // This is still different from challenge_scalar_powers as inside the for loop
-        // we use an optimised multiplication every time we compute the powers.
         let q: F::Challenge = self.challenge_scalar_optimized::<F>();
+        let q_f: F = q.into();
         let mut q_powers = vec![<F as ark_std::One>::one(); len];
         for i in 1..len {
-            q_powers[i] = q * q_powers[i - 1]; // this is optimised
+            q_powers[i] = q_f * q_powers[i - 1];
         }
         q_powers
     }

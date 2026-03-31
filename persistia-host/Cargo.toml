@@ -1,0 +1,18 @@
+[package]
+name = "persistia-jolt-host"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "persistia-jolt-bench"
+path = "src/main.rs"
+
+[dependencies]
+jolt-sdk = { path = "../jolt-sdk", features = ["host"] }
+jolt-inlines-sha2 = { path = "../jolt-inlines/sha2", features = ["host"] }
+guest = { package = "persistia-jolt-guest", path = "../persistia-guest" }
+clap = { version = "4", features = ["derive"] }
+rand = "0.8"
+hex = "0.4"
+tracing.workspace = true
+tracing-subscriber.workspace = true

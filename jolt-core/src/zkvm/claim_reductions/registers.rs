@@ -125,12 +125,8 @@ impl<F: JoltField> SumcheckInstanceParams<F> for RegistersClaimReductionSumcheck
         let gamma_sqr = ValueSource::Challenge(2);
 
         let terms = vec![
-            ProductTerm::product(vec![eq_eval.clone(), ValueSource::Opening(rd_write_value)]),
-            ProductTerm::product(vec![
-                eq_eval.clone(),
-                gamma,
-                ValueSource::Opening(rs1_value),
-            ]),
+            ProductTerm::product(vec![eq_eval, ValueSource::Opening(rd_write_value)]),
+            ProductTerm::product(vec![eq_eval, gamma, ValueSource::Opening(rs1_value)]),
             ProductTerm::product(vec![eq_eval, gamma_sqr, ValueSource::Opening(rs2_value)]),
         ];
 

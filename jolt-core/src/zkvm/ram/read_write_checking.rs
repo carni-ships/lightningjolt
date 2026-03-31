@@ -576,8 +576,10 @@ impl<F: JoltField> RamReadWriteCheckingProver<F> {
         let gruen_eq = gruen_eq.as_mut().unwrap();
 
         sparse_matrix.bind(r_j);
-        gruen_eq.bind(r_j);
-        inc.bind_parallel(r_j, BindingOrder::LowToHigh);
+        rayon::join(
+            || gruen_eq.bind(r_j),
+            || inc.bind_parallel(r_j, BindingOrder::LowToHigh),
+        );
 
         if round == params.phase1_num_rounds - 1 {
             self.merged_eq = Some(MultilinearPolynomial::LargeScalars(gruen_eq.merge()));
@@ -628,12 +630,26 @@ impl<F: JoltField> RamReadWriteCheckingProver<F> {
         let val = val.as_mut().unwrap();
 
         if inc.len() > 1 {
-            // Cycle variables remaining
-            inc.bind_parallel(r_j, BindingOrder::LowToHigh);
-            merged_eq.bind_parallel(r_j, BindingOrder::LowToHigh);
+            rayon::join(
+                || {
+                    rayon::join(
+                        || inc.bind_parallel(r_j, BindingOrder::LowToHigh),
+                        || merged_eq.bind_parallel(r_j, BindingOrder::LowToHigh),
+                    )
+                },
+                || {
+                    rayon::join(
+                        || ra.bind_parallel(r_j, BindingOrder::LowToHigh),
+                        || val.bind_parallel(r_j, BindingOrder::LowToHigh),
+                    )
+                },
+            );
+        } else {
+            rayon::join(
+                || ra.bind_parallel(r_j, BindingOrder::LowToHigh),
+                || val.bind_parallel(r_j, BindingOrder::LowToHigh),
+            );
         }
-        ra.bind_parallel(r_j, BindingOrder::LowToHigh);
-        val.bind_parallel(r_j, BindingOrder::LowToHigh);
     }
 }
 

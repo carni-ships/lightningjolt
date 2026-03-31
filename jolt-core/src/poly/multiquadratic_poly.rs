@@ -356,7 +356,6 @@ impl<F: JoltField> PolynomialBinding<F> for MultiquadraticPolynomial<F> {
         self.num_vars == 0 || self.evals.len() == 1
     }
 
-    #[tracing::instrument(skip_all, name = "MultiquadraticPolynomial::bind")]
     fn bind(&mut self, r: F::Challenge, order: BindingOrder) {
         match order {
             BindingOrder::LowToHigh => self.bind_first_variable(r),

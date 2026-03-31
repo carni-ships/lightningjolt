@@ -434,10 +434,9 @@ fn compute_all_G_impl<F: JoltField>(
             || (0..N).map(|_| unsafe_allocate_zero_vec::<F>(K)).collect(),
             |mut a, b| {
                 for (a_poly, b_poly) in a.iter_mut().zip(b.iter()) {
-                    a_poly
-                        .par_iter_mut()
-                        .zip(b_poly.par_iter())
-                        .for_each(|(a_val, b_val)| *a_val += *b_val);
+                    for (a_val, b_val) in a_poly.iter_mut().zip(b_poly.iter()) {
+                        *a_val += *b_val;
+                    }
                 }
                 a
             },
@@ -607,20 +606,15 @@ impl<F: JoltField> SharedRaRound1<F> {
     fn bind(self, r0: F::Challenge, order: BindingOrder) -> SharedRaRound2<F> {
         let eq_0_r0 = EqPolynomial::mle(&[F::zero()], &[r0]);
         let eq_1_r0 = EqPolynomial::mle(&[F::one()], &[r0]);
-        let (tables_0, tables_1) = rayon::join(
-            || {
-                self.tables
-                    .par_iter()
-                    .map(|t| t.iter().map(|v| eq_0_r0 * v).collect::<Vec<F>>())
-                    .collect::<Vec<Vec<F>>>()
-            },
-            || {
-                self.tables
-                    .par_iter()
-                    .map(|t| t.iter().map(|v| eq_1_r0 * v).collect::<Vec<F>>())
-                    .collect::<Vec<Vec<F>>>()
-            },
-        );
+        let (tables_0, tables_1): (Vec<Vec<F>>, Vec<Vec<F>>) = self
+            .tables
+            .iter()
+            .map(|t| {
+                let t0: Vec<F> = t.iter().map(|v| eq_0_r0 * v).collect();
+                let t1: Vec<F> = t.iter().map(|v| eq_1_r0 * v).collect();
+                (t0, t1)
+            })
+            .unzip();
         drop_in_background_thread(self.tables);
 
         SharedRaRound2 {
@@ -670,37 +664,26 @@ impl<F: JoltField> SharedRaRound2<F> {
         let mut tables_10 = self.tables_1.clone();
         let mut tables_11 = self.tables_1;
 
-        // Scale all four groups in parallel.
-        rayon::join(
-            || {
-                rayon::join(
-                    || {
-                        tables_00
-                            .par_iter_mut()
-                            .for_each(|t| t.par_iter_mut().for_each(|f| *f *= eq_0_r1))
-                    },
-                    || {
-                        tables_01
-                            .par_iter_mut()
-                            .for_each(|t| t.par_iter_mut().for_each(|f| *f *= eq_1_r1))
-                    },
-                )
-            },
-            || {
-                rayon::join(
-                    || {
-                        tables_10
-                            .par_iter_mut()
-                            .for_each(|t| t.par_iter_mut().for_each(|f| *f *= eq_0_r1))
-                    },
-                    || {
-                        tables_11
-                            .par_iter_mut()
-                            .for_each(|t| t.par_iter_mut().for_each(|f| *f *= eq_1_r1))
-                    },
-                )
-            },
-        );
+        for t in tables_00.iter_mut() {
+            for f in t.iter_mut() {
+                *f *= eq_0_r1;
+            }
+        }
+        for t in tables_01.iter_mut() {
+            for f in t.iter_mut() {
+                *f *= eq_1_r1;
+            }
+        }
+        for t in tables_10.iter_mut() {
+            for f in t.iter_mut() {
+                *f *= eq_0_r1;
+            }
+        }
+        for t in tables_11.iter_mut() {
+            for f in t.iter_mut() {
+                *f *= eq_1_r1;
+            }
+        }
 
         SharedRaRound3 {
             tables_00,
@@ -771,37 +754,30 @@ impl<F: JoltField> SharedRaRound3<F> {
         let mut tables_110 = self.tables_11.clone();
         let mut tables_111 = self.tables_11;
 
-        // Scale by eq(r2, bit)
-        rayon::join(
-            || {
-                [
-                    &mut tables_000,
-                    &mut tables_010,
-                    &mut tables_100,
-                    &mut tables_110,
-                ]
-                .into_par_iter()
-                .for_each(|table| {
-                    table
-                        .par_iter_mut()
-                        .for_each(|t| t.par_iter_mut().for_each(|f| *f *= eq_0_r2))
-                })
-            },
-            || {
-                [
-                    &mut tables_001,
-                    &mut tables_011,
-                    &mut tables_101,
-                    &mut tables_111,
-                ]
-                .into_par_iter()
-                .for_each(|table| {
-                    table
-                        .par_iter_mut()
-                        .for_each(|t| t.par_iter_mut().for_each(|f| *f *= eq_1_r2))
-                })
-            },
-        );
+        for table in [
+            &mut tables_000,
+            &mut tables_010,
+            &mut tables_100,
+            &mut tables_110,
+        ] {
+            for t in table.iter_mut() {
+                for f in t.iter_mut() {
+                    *f *= eq_0_r2;
+                }
+            }
+        }
+        for table in [
+            &mut tables_001,
+            &mut tables_011,
+            &mut tables_101,
+            &mut tables_111,
+        ] {
+            for t in table.iter_mut() {
+                for f in t.iter_mut() {
+                    *f *= eq_1_r2;
+                }
+            }
+        }
 
         // Collect all 8 table groups for indexed access: group[offset][poly_idx][k]
         let table_groups = [

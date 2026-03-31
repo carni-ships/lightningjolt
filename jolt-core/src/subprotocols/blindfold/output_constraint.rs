@@ -1,6 +1,6 @@
 use crate::poly::opening_proof::OpeningId;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ValueSource {
     Opening(OpeningId),
     Challenge(usize),
@@ -140,7 +140,7 @@ impl OutputClaimConstraint {
     pub fn scaled_linear(multiplier: ValueSource, terms: Vec<(ValueSource, ValueSource)>) -> Self {
         let product_terms: Vec<ProductTerm> = terms
             .into_iter()
-            .map(|(coeff, val)| ProductTerm::scaled(coeff, vec![multiplier.clone(), val]))
+            .map(|(coeff, val)| ProductTerm::scaled(coeff, vec![multiplier, val]))
             .collect();
 
         let required_openings = Self::collect_unique_openings(&product_terms);
@@ -243,7 +243,7 @@ impl OutputClaimConstraint {
                     .map(|f| Self::offset_challenge(f, challenge_offset))
                     .collect();
 
-                let mut new_factors = vec![alpha_j.clone()];
+                let mut new_factors = vec![alpha_j];
                 new_factors.extend(offset_factors);
 
                 combined_terms.push(ProductTerm::new(offset_coeff, new_factors));
@@ -264,7 +264,7 @@ impl OutputClaimConstraint {
     fn offset_challenge(value: &ValueSource, offset: usize) -> ValueSource {
         match value {
             ValueSource::Challenge(idx) => ValueSource::Challenge(idx + offset),
-            other => other.clone(),
+            other => *other,
         }
     }
 }
@@ -405,7 +405,7 @@ mod tests {
         let a = ValueSource::Opening(test_opening(0));
         let b = ValueSource::Opening(test_opening(1));
 
-        let constraint = OutputClaimConstraint::product(vec![a.clone(), b.clone()]);
+        let constraint = OutputClaimConstraint::product(vec![a, b]);
 
         assert_eq!(constraint.terms.len(), 1);
         assert_eq!(constraint.terms[0].factors.len(), 2);
@@ -435,8 +435,8 @@ mod tests {
         let gamma = ValueSource::Challenge(0);
 
         let constraint = OutputClaimConstraint::sum_of_products(vec![
-            ProductTerm::product(vec![eq.clone(), ra.clone(), val.clone()]),
-            ProductTerm::scaled(gamma.clone(), vec![eq.clone(), ra.clone(), val.clone()]),
+            ProductTerm::product(vec![eq, ra, val]),
+            ProductTerm::scaled(gamma, vec![eq, ra, val]),
             ProductTerm::scaled(gamma, vec![eq, ra, inc]),
         ]);
 

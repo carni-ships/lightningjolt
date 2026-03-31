@@ -245,19 +245,19 @@ impl<F: JoltField> SumcheckInstanceParams<F> for RegistersReadWriteCheckingParam
         let terms = vec![
             // eq_eval * rd_wa * inc
             ProductTerm::product(vec![
-                eq_eval.clone(),
+                eq_eval,
                 ValueSource::Opening(rd_wa),
                 ValueSource::Opening(inc),
             ]),
             // eq_eval * rd_wa * val
             ProductTerm::product(vec![
-                eq_eval.clone(),
+                eq_eval,
                 ValueSource::Opening(rd_wa),
                 ValueSource::Opening(val),
             ]),
             // eq_eval * γ * rs1_ra * val
             ProductTerm::product(vec![
-                eq_eval.clone(),
+                eq_eval,
                 gamma,
                 ValueSource::Opening(rs1_ra),
                 ValueSource::Opening(val),
@@ -611,8 +611,10 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
         } = self;
         let gruen_eq = gruen_eq.as_mut().unwrap();
 
-        gruen_eq.bind(r_j);
-        inc.bind_parallel(r_j, BindingOrder::LowToHigh);
+        rayon::join(
+            || gruen_eq.bind(r_j),
+            || inc.bind_parallel(r_j, BindingOrder::LowToHigh),
+        );
 
         if let SparseMatrix::CycleMajorWithLookups(matrix) = sparse_matrix {
             // If the lookup table cannot expand further, dereference the
@@ -692,9 +694,10 @@ impl<F: JoltField> RegistersReadWriteCheckingProver<F> {
             .for_each(|poly| poly.bind_parallel(r_j, BindingOrder::LowToHigh));
 
         if inc.len() > 1 {
-            // Cycle variables remaining
-            inc.bind_parallel(r_j, BindingOrder::LowToHigh);
-            merged_eq.bind_parallel(r_j, BindingOrder::LowToHigh);
+            rayon::join(
+                || inc.bind_parallel(r_j, BindingOrder::LowToHigh),
+                || merged_eq.bind_parallel(r_j, BindingOrder::LowToHigh),
+            );
         }
     }
 

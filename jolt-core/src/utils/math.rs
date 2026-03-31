@@ -8,8 +8,7 @@ pub trait Math {
 impl Math for usize {
     #[inline]
     fn pow2(self) -> usize {
-        let base: usize = 2;
-        base.pow(self as u32)
+        1usize << self
     }
 
     fn log_2(self) -> usize {

@@ -47,6 +47,9 @@ monitor = ["dep:sysinfo"]
 pprof = ["dep:pprof", "dep:prost"]
 test_incremental = []
 challenge-254-bit = []
+icicle = ["dep:icicle-runtime", "dep:icicle-core", "dep:icicle-bn254"]
+icicle-metal = ["icicle", "icicle-runtime/metal_backend", "icicle-bn254/metal_backend"]
+metal-pairing = ["dep:metal"]
 
 [dependencies]
 ark-bn254.workspace = true
@@ -77,6 +80,7 @@ tracing.workspace = true
 tracing-chrome.workspace = true
 tracing-subscriber.workspace = true
 eyre.workspace = true
+mimalloc.workspace = true
 common.workspace = true
 tracer = { workspace = true, default-features = false, features = ["std"] }
 bincode.workspace = true
@@ -88,6 +92,9 @@ jolt-inlines-sha2 = { workspace = true, features = ["host"], optional = true }
 jolt-inlines-keccak256 = { workspace = true, features = [
     "host",
 ], optional = true }
+icicle-runtime = { workspace = true, optional = true }
+icicle-core = { workspace = true, optional = true }
+icicle-bn254 = { workspace = true, optional = true, default-features = false, features = ["msm", "g2"] }
 sysinfo = { version = "0.37", optional = true }
 pprof = { version = "0.15", features = [
     "prost-codec",
@@ -95,6 +102,7 @@ pprof = { version = "0.15", features = [
     "frame-pointer",
 ], optional = true }
 prost = { version = "0.14", optional = true }
+metal = { version = "0.33", optional = true }
 
 [package.metadata.cargo-machete]
 ignored = ["prost"]

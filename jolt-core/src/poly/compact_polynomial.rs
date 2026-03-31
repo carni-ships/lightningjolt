@@ -153,21 +153,34 @@ impl<T: SmallScalar, F: JoltField> CompactPolynomial<T, F> {
             let (evals_left, evals_right) = current.split_at_mut(stride);
             let (evals_right, _) = evals_right.split_at_mut(stride);
 
-            evals_left
-                .par_iter_mut()
-                .zip(evals_right.par_iter())
-                .for_each(|(x, y)| {
-                    //*x = *x + r_val * (*y - *x);
+            if stride < 4096 {
+                for (x, y) in evals_left.iter_mut().zip(evals_right.iter()) {
                     let slope = *y - *x;
                     if slope.is_zero() {
-                        return;
+                        continue;
                     }
                     if slope.is_one() {
                         *x += r_val;
                     } else {
                         *x += r_val * slope;
                     }
-                });
+                }
+            } else {
+                evals_left
+                    .par_iter_mut()
+                    .zip(evals_right.par_iter())
+                    .for_each(|(x, y)| {
+                        let slope = *y - *x;
+                        if slope.is_zero() {
+                            return;
+                        }
+                        if slope.is_one() {
+                            *x += r_val;
+                        } else {
+                            *x += r_val * slope;
+                        }
+                    });
+            }
         }
         current[0]
     }
@@ -178,7 +191,6 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
         !self.bound_coeffs.is_empty()
     }
 
-    #[tracing::instrument(skip_all, name = "CompactPolynomial::bind")]
     fn bind(&mut self, r: F::Challenge, order: BindingOrder) {
         let n = self.len() / 2;
         if self.is_bound() {
@@ -248,7 +260,6 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
         self.len = n;
     }
 
-    #[tracing::instrument(skip_all, name = "CompactPolynomial::bind")]
     fn bind_parallel(&mut self, r: F::Challenge, order: BindingOrder) {
         let n = self.len() / 2;
         if self.is_bound() {
@@ -333,7 +344,12 @@ impl<T: SmallScalar, F: JoltField> PolynomialBinding<F> for CompactPolynomial<T,
 
 impl<T: SmallScalar, F: JoltField> Clone for CompactPolynomial<T, F> {
     fn clone(&self) -> Self {
-        Self::from_coeffs(self.coeffs.to_vec())
+        CompactPolynomial {
+            num_vars: self.num_vars,
+            len: self.len,
+            coeffs: self.coeffs.clone(),
+            bound_coeffs: self.bound_coeffs.clone(),
+        }
     }
 }
 

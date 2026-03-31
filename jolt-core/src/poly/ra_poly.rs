@@ -157,7 +157,6 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
         self.lookup_indices.len()
     }
 
-    #[tracing::instrument(skip_all, name = "RaPolynomialRound1::bind")]
     fn bind(self, r0: F::Challenge, binding_order: BindingOrder) -> RaPolynomialRound2<I, F> {
         // Construct lookup tables.
         let eq_0_r0 = EqPolynomial::mle(&[F::zero()], &[r0]);
@@ -206,7 +205,6 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
         self.lookup_indices.len() / 2
     }
 
-    #[tracing::instrument(skip_all, name = "RaPolynomialRound2::bind")]
     fn bind(self, r1: F::Challenge, binding_order: BindingOrder) -> RaPolynomialRound3<I, F> {
         assert_eq!(binding_order, self.binding_order);
         // Construct lookup tables.
@@ -217,10 +215,10 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
         let mut F_10: Vec<F> = self.F_1.clone();
         let mut F_11: Vec<F> = self.F_1;
 
-        F_00.par_iter_mut().for_each(|f| *f *= eq_0_r1);
-        F_01.par_iter_mut().for_each(|f| *f *= eq_1_r1);
-        F_10.par_iter_mut().for_each(|f| *f *= eq_0_r1);
-        F_11.par_iter_mut().for_each(|f| *f *= eq_1_r1);
+        F_00.iter_mut().for_each(|f| *f *= eq_0_r1);
+        F_01.iter_mut().for_each(|f| *f *= eq_1_r1);
+        F_10.iter_mut().for_each(|f| *f *= eq_0_r1);
+        F_11.iter_mut().for_each(|f| *f *= eq_1_r1);
 
         RaPolynomialRound3 {
             F_00,
@@ -281,7 +279,6 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
         self.lookup_indices.len() / 4
     }
 
-    #[tracing::instrument(skip_all, name = "RaPolynomialRound3::bind")]
     fn bind(self, r2: F::Challenge, _binding_order: BindingOrder) -> MultilinearPolynomial<F> {
         // Construct lookup tables.
         let eq_0_r2 = EqPolynomial::mle(&[F::zero()], &[r2]);
@@ -295,14 +292,14 @@ impl<I: Into<usize> + Copy + Default + Send + Sync + 'static, F: JoltField>
         let mut F_110: Vec<F> = self.F_11.clone();
         let mut F_111: Vec<F> = self.F_11;
 
-        F_000.par_iter_mut().for_each(|f| *f *= eq_0_r2);
-        F_010.par_iter_mut().for_each(|f| *f *= eq_0_r2);
-        F_100.par_iter_mut().for_each(|f| *f *= eq_0_r2);
-        F_110.par_iter_mut().for_each(|f| *f *= eq_0_r2);
-        F_001.par_iter_mut().for_each(|f| *f *= eq_1_r2);
-        F_011.par_iter_mut().for_each(|f| *f *= eq_1_r2);
-        F_101.par_iter_mut().for_each(|f| *f *= eq_1_r2);
-        F_111.par_iter_mut().for_each(|f| *f *= eq_1_r2);
+        F_000.iter_mut().for_each(|f| *f *= eq_0_r2);
+        F_010.iter_mut().for_each(|f| *f *= eq_0_r2);
+        F_100.iter_mut().for_each(|f| *f *= eq_0_r2);
+        F_110.iter_mut().for_each(|f| *f *= eq_0_r2);
+        F_001.iter_mut().for_each(|f| *f *= eq_1_r2);
+        F_011.iter_mut().for_each(|f| *f *= eq_1_r2);
+        F_101.iter_mut().for_each(|f| *f *= eq_1_r2);
+        F_111.iter_mut().for_each(|f| *f *= eq_1_r2);
 
         let lookup_indices = &self.lookup_indices;
         let n = lookup_indices.len() / 8;

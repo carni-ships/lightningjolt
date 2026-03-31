@@ -1,0 +1,17 @@
+[package]
+name = "lazy-pairing-bench"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[dependencies]
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout", package = "ark-bn254" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout", package = "ark-ec" }
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout", package = "ark-ff" }
+ark-std = "0.4"
+rayon = "1.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -312,7 +312,6 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
         }
     }
 
-    #[tracing::instrument(skip_all, name = "GruenSplitEqPolynomial::bind")]
     pub fn bind(&mut self, r: F::Challenge) {
         match self.binding_order {
             BindingOrder::LowToHigh => {
@@ -571,15 +570,15 @@ impl<F: JoltField> GruenSplitEqPolynomial<F> {
         let e_in = self.E_in_current();
         let out_len = e_out.len();
         let in_len = e_in.len();
+        let num_x_in_bits = in_len.log_2();
 
         (0..out_len)
             .into_par_iter()
             .map(|x_out| {
                 let mut inner_acc = make_inner();
 
-                // No special case needed: E_in is always at least [1]
                 for x_in in 0..in_len {
-                    let g = self.group_index(x_out, x_in);
+                    let g = (x_out << num_x_in_bits) | x_in;
                     inner_step(&mut inner_acc, g, x_in, e_in[x_in]);
                 }
 

@@ -35,9 +35,10 @@ where
             MultilinearPolynomial::U8Scalars(poly) => (bases.len() == poly.coeffs.len())
                 .then(|| {
                     let scalars = &poly.coeffs;
-                    if scalars.par_iter().all(|&s| s == 0) {
+                    let max_val = scalars.par_iter().copied().max().unwrap_or(0);
+                    if max_val == 0 {
                         Self::zero()
-                    } else if scalars.par_iter().all(|&s| s <= 1) {
+                    } else if max_val <= 1 {
                         let bool_scalars: Vec<bool> = scalars.par_iter().map(|&s| s == 1).collect();
                         msm_binary::<Self>(bases, &bool_scalars, false)
                     } else {
@@ -91,7 +92,8 @@ where
     fn msm_u8(bases: &[Self::MulBase], scalars: &[u8]) -> Result<Self, ProofVerifyError> {
         (bases.len() == scalars.len())
             .then(|| {
-                if scalars.par_iter().all(|&s| s <= 1) {
+                let max_val = scalars.par_iter().copied().max().unwrap_or(0);
+                if max_val <= 1 {
                     let bool_scalars: Vec<bool> = scalars.par_iter().map(|&s| s == 1).collect();
                     msm_binary::<Self>(bases, &bool_scalars, true)
                 } else {

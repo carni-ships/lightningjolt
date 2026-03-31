@@ -171,4 +171,20 @@ pub trait StreamingCommitmentScheme: CommitmentScheme {
         onehot_k: Option<usize>,
         tier1_commitments: &[Self::ChunkState],
     ) -> (Self::Commitment, Self::OpeningProofHint);
+
+    /// Batch compute tier2 commitments for multiple polynomials.
+    /// Default implementation calls `aggregate_chunks` in parallel.
+    /// Overridden by DoryCommitmentScheme with GPU batching when `metal-pairing` is enabled.
+    fn batch_aggregate_chunks(
+        setup: &Self::ProverSetup,
+        tier1_per_poly: Vec<Vec<Self::ChunkState>>,
+        onehot_ks: &[Option<usize>],
+    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)> {
+        use rayon::prelude::*;
+        tier1_per_poly
+            .into_par_iter()
+            .zip(onehot_ks.par_iter())
+            .map(|(tier1, k)| Self::aggregate_chunks(setup, *k, &tier1))
+            .collect()
+    }
 }

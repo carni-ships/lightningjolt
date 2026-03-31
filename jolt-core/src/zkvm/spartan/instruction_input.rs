@@ -181,7 +181,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for InstructionInputParams<F> {
         let terms = vec![
             // E2 * right_is_rs2 * rs2_value
             ProductTerm::product(vec![
-                e2.clone(),
+                e2,
                 ValueSource::Opening(right_is_rs2),
                 ValueSource::Opening(rs2_value),
             ]),
@@ -193,7 +193,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for InstructionInputParams<F> {
             ]),
             // γ*E2 * left_is_rs1 * rs1_value
             ProductTerm::product(vec![
-                gamma_e2.clone(),
+                gamma_e2,
                 ValueSource::Opening(left_is_rs1),
                 ValueSource::Opening(rs1_value),
             ]),

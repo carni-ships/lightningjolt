@@ -1,5 +1,4 @@
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::cell::UnsafeCell;
 
 use allocative::Allocative;
 use ark_std::Zero;
@@ -714,22 +713,28 @@ impl<F: JoltField> ReadWriteMatrixAddressMajor<F, RegistersAddressMajorEntry<F>>
     /// there are `K_prime` columns and `T_prime` rows left in the matrix.
     #[tracing::instrument(skip_all, name = "ReadWriteMatrixAddressMajor::materialize")]
     pub fn materialize(self, K_prime: usize, T_prime: usize) -> [MultilinearPolynomial<F>; 3] {
-        // Initialize ra, wa and Val to initial values
-        let ra: Vec<Arc<Mutex<F>>> = (0..K_prime * T_prime)
-            .into_par_iter()
-            .map(|_| Arc::new(Mutex::new(F::zero())))
-            .collect();
-        let wa: Vec<Arc<Mutex<F>>> = (0..K_prime * T_prime)
-            .into_par_iter()
-            .map(|_| Arc::new(Mutex::new(F::zero())))
-            .collect();
-        let val: Vec<Arc<Mutex<F>>> = (0..K_prime * T_prime)
-            .into_par_iter()
-            .map(|_| Arc::new(Mutex::new(F::zero())))
-            .collect();
+        let total = K_prime * T_prime;
 
-        // Update some of the ra, wa and Val coefficients based on
-        // matrix entries.
+        // SAFETY: Each column chunk writes to a disjoint index range
+        // `[k * T_prime .. (k+1) * T_prime]`, so no data races occur.
+        struct SyncUnsafeSlice<T>(Vec<UnsafeCell<T>>);
+        unsafe impl<T: Send> Sync for SyncUnsafeSlice<T> {}
+        impl<T: Send> SyncUnsafeSlice<T> {
+            fn new(v: Vec<T>) -> Self {
+                Self(v.into_iter().map(UnsafeCell::new).collect())
+            }
+            unsafe fn set(&self, idx: usize, val: T) {
+                *self.0[idx].get() = val;
+            }
+            fn into_vec(self) -> Vec<T> {
+                self.0.into_iter().map(|cell| cell.into_inner()).collect()
+            }
+        }
+
+        let ra = SyncUnsafeSlice::new(vec![F::zero(); total]);
+        let wa = SyncUnsafeSlice::new(vec![F::zero(); total]);
+        let val = SyncUnsafeSlice::new(vec![F::zero(); total]);
+
         self.entries
             .par_chunk_by(|a, b| a.column() == b.column())
             .for_each(|column| {
@@ -739,30 +744,23 @@ impl<F: JoltField> ReadWriteMatrixAddressMajor<F, RegistersAddressMajorEntry<F>>
                 for j in 0..T_prime {
                     let idx = k * T_prime + j;
                     if let Some(entry) = column_iter.next_if(|&entry| entry.row() == j) {
-                        *ra[idx].lock().unwrap() = entry.ra_coeff;
-                        *wa[idx].lock().unwrap() = entry.wa_coeff;
-                        *val[idx].lock().unwrap() = entry.val_coeff;
+                        // SAFETY: disjoint column ranges guarantee no concurrent writes
+                        unsafe {
+                            ra.set(idx, entry.ra_coeff);
+                            wa.set(idx, entry.wa_coeff);
+                            val.set(idx, entry.val_coeff);
+                        }
                         current_val_coeff = entry.next_val();
                         continue;
                     }
-                    *val[idx].lock().unwrap() = current_val_coeff;
-                    continue;
+                    unsafe { val.set(idx, current_val_coeff) };
                 }
             });
-        // Unwrap Arc<Mutex<F>> back into F
-        let ra: Vec<F> = ra
-            .into_par_iter()
-            .map(|arc_mutex| *arc_mutex.lock().unwrap())
-            .collect();
-        let wa: Vec<F> = wa
-            .into_par_iter()
-            .map(|arc_mutex| *arc_mutex.lock().unwrap())
-            .collect();
-        let val: Vec<F> = val
-            .into_par_iter()
-            .map(|arc_mutex| *arc_mutex.lock().unwrap())
-            .collect();
-        // Convert Vec<F> to MultilinearPolynomial<F>
-        [ra.into(), wa.into(), val.into()]
+
+        [
+            ra.into_vec().into(),
+            wa.into_vec().into(),
+            val.into_vec().into(),
+        ]
     }
 }

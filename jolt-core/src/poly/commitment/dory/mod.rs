@@ -5,7 +5,11 @@
 
 mod commitment_scheme;
 mod dory_globals;
+#[cfg(feature = "icicle")]
+pub(crate) mod icicle_msm;
 mod jolt_dory_routines;
+#[cfg(feature = "metal-pairing")]
+pub(crate) mod metal_pairing;
 mod wrappers;
 
 #[cfg(test)]
