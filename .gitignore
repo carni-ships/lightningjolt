@@ -62,6 +62,5 @@ benchmark-runs/
 .claude/
 CLAUDE.md
 
-# Local traces and research
+# Local traces
 jolteon-trace.json
-Jolteon/

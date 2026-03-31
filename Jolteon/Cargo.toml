@@ -1,0 +1,54 @@
+[package]
+name = "jolteon"
+version = "0.1.0"
+edition = "2021"
+description = "Jolt prover optimizations for Apple Silicon (M3 Pro)"
+
+[[bin]]
+name = "jolteon"
+path = "src/main.rs"
+
+[[bench]]
+name = "field_ops"
+harness = false
+
+[dependencies]
+# Jolt dependencies
+jolt-sdk = { path = "../jolt-sdk", features = ["host"] }
+jolt-core = { path = "../jolt-core", features = ["host"] }
+jolt-inlines-sha2 = { path = "../jolt-inlines/sha2", features = ["host"] }
+common = { path = "../common", features = ["std"] }
+guest = { package = "persistia-jolt-guest", path = "../persistia-guest" }
+
+# Arkworks
+ark-bn254.workspace = true
+ark-ff.workspace = true
+ark-ec.workspace = true
+ark-std.workspace = true
+
+# Parallelism
+rayon.workspace = true
+
+# CLI & IO
+clap = { version = "4", features = ["derive"] }
+hex = "0.4"
+rand = "0.8"
+serde.workspace = true
+serde_json.workspace = true
+
+# Tracing
+tracing.workspace = true
+tracing-subscriber.workspace = true
+tracing-chrome.workspace = true
+
+# Profiling
+criterion.workspace = true
+
+# Metal GPU (macOS only)
+[target.'cfg(target_os = "macos")'.dependencies]
+metal = "0.29"
+objc = "0.2"
+block = "0.1"
+
+[dev-dependencies]
+criterion.workspace = true
