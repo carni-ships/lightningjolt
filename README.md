@@ -27,7 +27,7 @@ Hardware: Apple M3 Pro, `RAYON_NUM_THREADS=10`.
 
 We also investigated and ruled out Metal GPU acceleration (4x penalty from lack of native 64-bit integer multiply), custom AArch64 assembly (LLVM already optimal), and witness/proving pipeline overlap (blocked by Fiat-Shamir transcript ordering).
 
-See [`LightningJolt/RESEARCH-SUMMARY.md`](LightningJolt/RESEARCH-SUMMARY.md) for the full write-up.
+See [`lightningjolt/RESEARCH-SUMMARY.md`](lightningjolt/RESEARCH-SUMMARY.md) for the full write-up.
 
 ## On-Chain Dory Verification
 
@@ -56,7 +56,7 @@ The on-chain verifier code lives in a sibling directory (`contracts/zk-onchain-v
 ```
 jolt-core/              # Core proving system (with Dory pairing optimizations)
 third-party/dory-pcs/   # Local fork of dory-pcs with batch affine conversion
-LightningJolt/                # Profiler, benchmarks, Metal GPU experiments, research reports
+lightningjolt/              # Profiler, benchmarks, Metal GPU experiments, research reports
   RESEARCH-SUMMARY.md   # Full optimization research write-up
   RESULTS.md            # Benchmark results and findings
   shaders/              # Metal compute shaders (BN254 field ops, MSM)
