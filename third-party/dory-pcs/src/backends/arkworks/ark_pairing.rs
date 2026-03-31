@@ -444,51 +444,114 @@ mod pairing_helpers {
                 }
             }
 
+            // Fast path: if no identity points were filtered out, indices are 0..n
+            // and we can slice the G2 cache directly without cloning.
+            #[cfg(feature = "cache")]
+            let contiguous = non_zero.len() == ps.len();
+            #[cfg(not(feature = "cache"))]
+            let contiguous = false;
+
             let chunk_size = determine_chunk_size(non_zero.len());
 
             #[cfg(feature = "cache")]
             let cache = crate::backends::arkworks::ark_cache::get_prepared_cache();
 
-            let combined = non_zero
-                .par_chunks(chunk_size)
-                .map(|chunk| {
-                    let ps_prep: Vec<<Bn254 as Pairing>::G1Prepared> =
-                        chunk.iter().map(|(_, a)| (*a).into()).collect();
+            let combined = if contiguous {
+                #[cfg(feature = "cache")]
+                {
+                    if let Some(ref c) = cache {
+                        let g1_affines: Vec<ark_bn254::G1Affine> =
+                            non_zero.iter().map(|(_, a)| *a).collect();
+                        let g2_prep = &c.g2_prepared[..non_zero.len()];
 
-                    #[cfg(feature = "cache")]
-                    let qs_prep: Vec<<Bn254 as Pairing>::G2Prepared> = if let Some(ref c) = cache {
-                        chunk
-                            .iter()
-                            .map(|(orig_idx, _)| c.g2_prepared[*orig_idx].clone())
-                            .collect()
+                        g1_affines
+                            .par_chunks(chunk_size)
+                            .zip(g2_prep.par_chunks(chunk_size))
+                            .map(|(g1_chunk, g2_chunk)| {
+                                let ps_prep: Vec<<Bn254 as Pairing>::G1Prepared> =
+                                    g1_chunk.iter().map(|a| (*a).into()).collect();
+                                multi_miller_loop_single_acc(&ps_prep, g2_chunk)
+                            })
+                            .reduce(
+                                || ark_ec::pairing::MillerLoopOutput(
+                                    <<Bn254 as Pairing>::TargetField>::one(),
+                                ),
+                                |a, b| ark_ec::pairing::MillerLoopOutput(a.0 * b.0),
+                            )
                     } else {
-                        use ark_bn254::G2Affine;
-                        chunk
-                            .iter()
-                            .map(|(orig_idx, _)| {
-                                let affine: G2Affine = qs[*orig_idx].0.into();
-                                affine.into()
+                        // Cache not initialized, fall through to clone path
+                        non_zero
+                            .par_chunks(chunk_size)
+                            .map(|chunk| {
+                                let ps_prep: Vec<<Bn254 as Pairing>::G1Prepared> =
+                                    chunk.iter().map(|(_, a)| (*a).into()).collect();
+                                let qs_prep: Vec<<Bn254 as Pairing>::G2Prepared> = {
+                                    use ark_bn254::G2Affine;
+                                    chunk
+                                        .iter()
+                                        .map(|(orig_idx, _)| {
+                                            let affine: G2Affine = qs[*orig_idx].0.into();
+                                            affine.into()
+                                        })
+                                        .collect()
+                                };
+                                multi_miller_loop_single_acc(&ps_prep, &qs_prep)
                             })
-                            .collect()
-                    };
-                    #[cfg(not(feature = "cache"))]
-                    let qs_prep: Vec<<Bn254 as Pairing>::G2Prepared> = {
-                        use ark_bn254::G2Affine;
-                        chunk
-                            .iter()
-                            .map(|(orig_idx, _)| {
-                                let affine: G2Affine = qs[*orig_idx].0.into();
-                                affine.into()
-                            })
-                            .collect()
-                    };
+                            .reduce(
+                                || ark_ec::pairing::MillerLoopOutput(
+                                    <<Bn254 as Pairing>::TargetField>::one(),
+                                ),
+                                |a, b| ark_ec::pairing::MillerLoopOutput(a.0 * b.0),
+                            )
+                    }
+                }
+                #[cfg(not(feature = "cache"))]
+                unreachable!()
+            } else {
+                non_zero
+                    .par_chunks(chunk_size)
+                    .map(|chunk| {
+                        let ps_prep: Vec<<Bn254 as Pairing>::G1Prepared> =
+                            chunk.iter().map(|(_, a)| (*a).into()).collect();
 
-                    multi_miller_loop_single_acc(&ps_prep, &qs_prep)
-                })
-                .reduce(
-                    || ark_ec::pairing::MillerLoopOutput(<<Bn254 as Pairing>::TargetField>::one()),
-                    |a, b| ark_ec::pairing::MillerLoopOutput(a.0 * b.0),
-                );
+                        #[cfg(feature = "cache")]
+                        let qs_prep: Vec<<Bn254 as Pairing>::G2Prepared> =
+                            if let Some(ref c) = cache {
+                                chunk
+                                    .iter()
+                                    .map(|(orig_idx, _)| c.g2_prepared[*orig_idx].clone())
+                                    .collect()
+                            } else {
+                                use ark_bn254::G2Affine;
+                                chunk
+                                    .iter()
+                                    .map(|(orig_idx, _)| {
+                                        let affine: G2Affine = qs[*orig_idx].0.into();
+                                        affine.into()
+                                    })
+                                    .collect()
+                            };
+                        #[cfg(not(feature = "cache"))]
+                        let qs_prep: Vec<<Bn254 as Pairing>::G2Prepared> = {
+                            use ark_bn254::G2Affine;
+                            chunk
+                                .iter()
+                                .map(|(orig_idx, _)| {
+                                    let affine: G2Affine = qs[*orig_idx].0.into();
+                                    affine.into()
+                                })
+                                .collect()
+                        };
+
+                        multi_miller_loop_single_acc(&ps_prep, &qs_prep)
+                    })
+                    .reduce(
+                        || ark_ec::pairing::MillerLoopOutput(
+                            <<Bn254 as Pairing>::TargetField>::one(),
+                        ),
+                        |a, b| ark_ec::pairing::MillerLoopOutput(a.0 * b.0),
+                    )
+            };
 
             let result = Bn254::final_exponentiation(combined)
                 .expect("Final exponentiation should not fail");
