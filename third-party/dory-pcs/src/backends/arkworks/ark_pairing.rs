@@ -42,7 +42,7 @@ mod pairing_helpers {
         // Larger minimum chunk: Miller loop startup cost is significant,
         // so we want fewer, bigger chunks. Each chunk runs one multi_miller_loop.
         const MIN_CHUNK: usize = 128;
-        const MAX_CHUNK: usize = 512;
+        const MAX_CHUNK: usize = 1024;
 
         if total < MIN_CHUNK {
             return total;
