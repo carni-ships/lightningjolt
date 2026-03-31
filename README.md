@@ -1,10 +1,10 @@
 # Lightningjolt
 
-Persistia's fork of [a16z/jolt](https://github.com/a16z/jolt) — optimizing the Jolt zkVM prover and building the first on-chain Dory verifier.
+Optimizing the [Jolt](https://github.com/a16z/jolt) zkVM prover and building the first on-chain Dory verifier.
 
 ## What This Is
 
-Jolt is a zkVM for RISC-V (RV64IMAC) that uses sumcheck-based protocols and the Dory polynomial commitment scheme. This fork contains two lines of work:
+Jolt is a zkVM for RISC-V (RV64IMAC) that uses sumcheck-based protocols and the Dory polynomial commitment scheme. This fork contains two lines of work, applicable to any Jolt program:
 
 1. **Prover optimization (Jolteon)** — 14-40% faster proving via batch affine conversion in BN254 pairings and G1 SRS caching
 2. **On-chain verification** — A Groth16 wrapper circuit that makes Dory proofs verifiable on Ethereum for ~320K gas
@@ -16,12 +16,12 @@ The Dory commitment scheme dominates Jolt's proving time (~63% spent in BN254 pa
 - **Montgomery batch affine conversion** in the pairing layer — replaces N field inversions with 1 inversion + 3(N-1) multiplications
 - **G1 SRS base caching** — eliminates 10,240 redundant projective-to-affine conversions per prove via a static `RwLock<Arc>` cache
 
-| Tier | Mutations | Before | After | Improvement |
-|------|-----------|--------|-------|-------------|
-| minimal | 4 | 2.59s | 1.55s | **40%** |
-| small | 16 | 5.54s | 3.49s | **37%** |
-| medium | 32 | 7.34s | 5.95s | **19%** |
-| large | 64 | 10.51s | 9.04s | **14%** |
+| Circuit size | Before | After | Improvement |
+|--------------|--------|-------|-------------|
+| minimal | 2.59s | 1.55s | **40%** |
+| small | 5.54s | 3.49s | **37%** |
+| medium | 7.34s | 5.95s | **19%** |
+| large | 10.51s | 9.04s | **14%** |
 
 Hardware: Apple M3 Pro, `RAYON_NUM_THREADS=10`.
 
