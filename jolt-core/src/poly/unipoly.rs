@@ -33,76 +33,62 @@ impl<F: JoltField> UniPoly<F> {
     /// Interpolate a polynomial from its evaluations at the points 0, 1, 2, ..., n-1.
     pub fn from_evals(evals: &[F]) -> Self {
         match evals.len() {
-            0 => UniPoly {
-                coeffs: vec![F::zero()],
-            },
-            1 => UniPoly {
-                coeffs: vec![evals[0]],
-            },
-            2 => {
-                let c0 = evals[0];
-                let c1 = evals[1] - evals[0];
-                UniPoly {
-                    coeffs: vec![c0, c1],
-                }
-            }
-            3 => Self::from_evals_deg2(evals),
-            4 => Self::from_evals_deg3(evals),
+            3 => Self::from_evals_degree2(evals[0], evals[1], evals[2]),
+            4 => Self::from_evals_degree3(evals[0], evals[1], evals[2], evals[3]),
             _ => UniPoly {
                 coeffs: Self::newton_interpolation(evals),
             },
         }
     }
 
-    /// Degree-2 interpolation from evaluations at x = 0, 1, 2.
-    /// Uses Newton forward differences to avoid Gaussian elimination.
-    fn from_evals_deg2(evals: &[F]) -> Self {
-        let (e0, e1, e2) = (evals[0], evals[1], evals[2]);
-        let d1 = e1 - e0;
-        let d2 = e2 - e1 - d1; // e2 - 2*e1 + e0
-        let inv2 = F::from_u64(2).inverse().unwrap();
-        let c2 = d2 * inv2;
-        let c1 = d1 - c2;
-        UniPoly {
-            coeffs: vec![e0, c1, c2],
-        }
-    }
-
-    /// Degree-3 interpolation from evaluations at x = 0, 1, 2, 3.
-    /// Uses Newton forward differences to avoid Gaussian elimination.
-    fn from_evals_deg3(evals: &[F]) -> Self {
-        let (e0, e1, e2, e3) = (evals[0], evals[1], evals[2], evals[3]);
-        let d1 = e1 - e0;
-        let d2 = e2 - e1 - d1; // Δ² = e2 - 2*e1 + e0
-        let d12 = e2 - e1;
-        let d23 = e3 - e2;
-        let d3 = d23 - d12 - (d12 - d1); // Δ³ = e3 - 3*e2 + 3*e1 - e0
-        let inv6 = F::from_u64(6).inverse().unwrap();
-        let inv2 = inv6 + inv6 + inv6; // 3/6 = 1/2
-        let inv3 = inv6 + inv6; // 2/6 = 1/3
-        let c3 = d3 * inv6; // Δ³/6
-        let c2 = d2 * inv2 - d3 * inv2; // Δ²/2 - Δ³/2
-        let c1 = d1 - d2 * inv2 + d3 * inv3; // Δ¹ - Δ²/2 + Δ³/3
-        UniPoly {
-            coeffs: vec![e0, c1, c2, c3],
-        }
-    }
-
     /// Interpolate a polynomial `p(x)` from its evaluations at even points `0, 2, 3, ..., n-1`
     /// and a hint `p(0) + p(1)`.
     pub fn from_evals_and_hint(hint: F, evals: &[F]) -> Self {
-        let eval_at_1 = hint - evals[0];
         match evals.len() {
-            1 => Self::from_evals(&[evals[0], eval_at_1]),
-            2 => Self::from_evals(&[evals[0], eval_at_1, evals[1]]),
-            3 => Self::from_evals(&[evals[0], eval_at_1, evals[1], evals[2]]),
-            _ => {
-                let mut full = Vec::with_capacity(evals.len() + 1);
-                full.push(evals[0]);
-                full.push(eval_at_1);
-                full.extend_from_slice(&evals[1..]);
-                Self::from_evals(&full)
+            2 => {
+                let e0 = evals[0];
+                let e1 = hint - e0;
+                let e2 = evals[1];
+                Self::from_evals_degree2(e0, e1, e2)
             }
+            3 => {
+                let e0 = evals[0];
+                let e1 = hint - e0;
+                let e2 = evals[1];
+                let e3 = evals[2];
+                Self::from_evals_degree3(e0, e1, e2, e3)
+            }
+            _ => {
+                let mut full_evals = Vec::with_capacity(evals.len() + 1);
+                full_evals.push(evals[0]);
+                full_evals.push(hint - evals[0]);
+                full_evals.extend_from_slice(&evals[1..]);
+                Self::from_evals(&full_evals)
+            }
+        }
+    }
+
+    /// Direct interpolation for degree 2 polynomial from evals at 0, 1, 2.
+    fn from_evals_degree2(e0: F, e1: F, e2: F) -> Self {
+        let two_inv = F::from_u64(2).inverse().unwrap();
+        let c0 = e0;
+        let c2 = (e0 - e1 - e1 + e2) * two_inv;
+        let c1 = e1 - e0 - c2;
+        UniPoly {
+            coeffs: vec![c0, c1, c2],
+        }
+    }
+
+    /// Direct interpolation for degree 3 polynomial from evals at 0, 1, 2, 3.
+    fn from_evals_degree3(e0: F, e1: F, e2: F, e3: F) -> Self {
+        let two_inv = F::from_u64(2).inverse().unwrap();
+        let six_inv = F::from_u64(6).inverse().unwrap();
+        let c0 = e0;
+        let c3 = (e3 - e0 + (e1 - e2) * F::from_u64(3)) * six_inv;
+        let c2 = (e0 - e1 - e1 + e2) * two_inv - c3 - c3 - c3;
+        let c1 = e1 - e0 - c2 - c3;
+        UniPoly {
+            coeffs: vec![c0, c1, c2, c3],
         }
     }
 
@@ -489,7 +475,6 @@ impl<F: JoltField> Mul<F> for UniPoly<F> {
     type Output = Self;
 
     fn mul(mut self, rhs: F) -> Self {
-        // UniPoly coefficients are typically degree 2-5; sequential is faster than par_iter
         for c in &mut self.coeffs {
             *c *= rhs;
         }
@@ -539,10 +524,6 @@ impl<F: JoltField> MulAssign<&F> for UniPoly<F> {
 }
 
 impl<F: JoltField> CompressedUniPoly<F> {
-    pub fn get_compressed_coeffs(&self) -> &[F] {
-        &self.coeffs_except_linear_term
-    }
-
     // we require eval(0) + eval(1) = hint, so we can solve for the linear term as:
     // linear_term = hint - 2 * constant_term - deg2 term - deg3 term
     pub fn decompress(&self, hint: &F) -> UniPoly<F> {

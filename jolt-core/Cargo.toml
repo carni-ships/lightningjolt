@@ -80,7 +80,7 @@ tracing.workspace = true
 tracing-chrome.workspace = true
 tracing-subscriber.workspace = true
 eyre.workspace = true
-mimalloc.workspace = true
+mimalloc = "0.1"
 common.workspace = true
 tracer = { workspace = true, default-features = false, features = ["std"] }
 bincode.workspace = true
@@ -89,13 +89,11 @@ dory.workspace = true
 allocative.workspace = true
 inferno = { workspace = true, optional = true }
 jolt-inlines-sha2 = { workspace = true, features = ["host"], optional = true }
-jolt-inlines-keccak256 = { workspace = true, features = [
-    "host",
-], optional = true }
+jolt-inlines-keccak256 = { workspace = true, features = ["host"], optional = true }
 icicle-runtime = { workspace = true, optional = true }
 icicle-core = { workspace = true, optional = true }
 icicle-bn254 = { workspace = true, optional = true, default-features = false, features = ["msm", "g2"] }
-sysinfo = { version = "0.37", optional = true }
+sysinfo = { workspace = true, optional = true }
 pprof = { version = "0.15", features = [
     "prost-codec",
     "flamegraph",

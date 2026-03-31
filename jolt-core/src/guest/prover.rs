@@ -1,10 +1,11 @@
 use super::program::Program;
-use crate::curve::JoltCurve;
+use crate::curve::{Bn254Curve, JoltCurve};
 use crate::field::JoltField;
 use crate::poly::commitment::commitment_scheme::CommitmentScheme;
 use crate::poly::commitment::commitment_scheme::{StreamingCommitmentScheme, ZkEvalCommitment};
 use crate::poly::commitment::dory::DoryCommitmentScheme;
 use crate::transcripts::Transcript;
+use crate::zkvm::bytecode::PreprocessingError;
 use crate::zkvm::proof_serialization::JoltProof;
 use crate::zkvm::prover::JoltProverPreprocessing;
 use crate::zkvm::ProverDebugInfo;
@@ -16,24 +17,32 @@ use tracer::JoltDevice;
 pub fn preprocess(
     guest: &Program,
     max_trace_length: usize,
-) -> JoltProverPreprocessing<ark_bn254::Fr, DoryCommitmentScheme> {
+) -> Result<
+    JoltProverPreprocessing<ark_bn254::Fr, Bn254Curve, DoryCommitmentScheme>,
+    PreprocessingError,
+> {
     use crate::zkvm::verifier::JoltSharedPreprocessing;
 
-    let (bytecode, memory_init, program_size) = guest.decode();
+    let (bytecode, memory_init, program_size, e_entry) = guest.decode();
 
     let mut memory_config = guest.memory_config;
     memory_config.program_size = Some(program_size);
     let memory_layout = MemoryLayout::new(&memory_config);
-    let shared_preprocessing =
-        JoltSharedPreprocessing::new(bytecode, memory_layout, memory_init, max_trace_length);
-    JoltProverPreprocessing::new(shared_preprocessing)
+    let shared_preprocessing = JoltSharedPreprocessing::new(
+        bytecode,
+        memory_layout,
+        memory_init,
+        max_trace_length,
+        e_entry,
+    )?;
+    Ok(JoltProverPreprocessing::new(shared_preprocessing))
 }
 
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 #[cfg(feature = "prover")]
 pub fn prove<
     F: JoltField,
-    C: JoltCurve,
+    C: JoltCurve<F = F>,
     PCS: StreamingCommitmentScheme<Field = F> + ZkEvalCommitment<C>,
     FS: Transcript,
 >(
@@ -44,15 +53,12 @@ pub fn prove<
     trusted_advice_commitment: Option<<PCS as CommitmentScheme>::Commitment>,
     trusted_advice_hint: Option<<PCS as CommitmentScheme>::OpeningProofHint>,
     output_bytes: &mut [u8],
-    preprocessing: &JoltProverPreprocessing<F, PCS>,
+    preprocessing: &JoltProverPreprocessing<F, C, PCS>,
 ) -> (
     JoltProof<F, C, PCS, FS>,
     JoltDevice,
     Option<ProverDebugInfo<F, FS, PCS>>,
-)
-where
-    C::G1: From<crate::curve::Bn254G1>,
-{
+) {
     use crate::zkvm::prover::JoltCpuProver;
 
     let prover = JoltCpuProver::<F, C, PCS, FS>::gen_from_elf(

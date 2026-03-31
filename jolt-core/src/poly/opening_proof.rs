@@ -221,6 +221,8 @@ where
     pub log_T: usize,
     #[allocative(skip)]
     pending_claims: Vec<F>,
+    #[allocative(skip)]
+    pending_claim_ids: Vec<OpeningId>,
 }
 
 /// Accumulates openings encountered by the verifier over the course of Jolt,
@@ -244,6 +246,7 @@ where
     pub log_T: usize,
     pub zk_mode: bool,
     pending_claims: Vec<F>,
+    pending_claim_ids: Vec<OpeningId>,
 }
 
 pub trait OpeningAccumulator<F: JoltField> {
@@ -410,6 +413,7 @@ where
             appended_committed_openings: std::cell::RefCell::new(vec![]),
             log_T,
             pending_claims: Vec::new(),
+            pending_claim_ids: Vec::new(),
         }
     }
 
@@ -483,6 +487,7 @@ where
         }
 
         self.pending_claims.push(claim);
+        self.pending_claim_ids.push(key);
         self.openings.insert(key, (point, claim));
         self.index_opening_id(key);
         #[cfg(test)]
@@ -563,10 +568,15 @@ where
         for claim in self.pending_claims.drain(..) {
             transcript.append_scalar(b"opening_claim", &claim);
         }
+        self.pending_claim_ids.clear();
     }
 
     pub fn take_pending_claims(&mut self) -> Vec<F> {
         std::mem::take(&mut self.pending_claims)
+    }
+
+    pub fn take_pending_claim_ids(&mut self) -> Vec<OpeningId> {
+        std::mem::take(&mut self.pending_claim_ids)
     }
 }
 
@@ -637,6 +647,7 @@ where
             log_T,
             zk_mode,
             pending_claims: Vec::new(),
+            pending_claim_ids: Vec::new(),
         }
     }
 
@@ -701,6 +712,7 @@ where
                 }
             }
             self.pending_claims.push(*claim);
+            self.pending_claim_ids.push(key);
             let claim = *claim;
             self.openings.insert(key, (point, claim));
             self.index_opening_id(key);
@@ -718,6 +730,7 @@ where
         // In ZK mode the actual claim values are proven via BlindFold, not checked directly.
         let claim = F::zero();
         self.pending_claims.push(claim);
+        self.pending_claim_ids.push(key);
         self.openings.insert(key, (point, claim));
         self.index_opening_id(key);
     }
@@ -785,10 +798,15 @@ where
         for claim in self.pending_claims.drain(..) {
             transcript.append_scalar(b"opening_claim", &claim);
         }
+        self.pending_claim_ids.clear();
     }
 
     pub fn take_pending_claims(&mut self) -> Vec<F> {
         std::mem::take(&mut self.pending_claims)
+    }
+
+    pub fn take_pending_claim_ids(&mut self) -> Vec<OpeningId> {
+        std::mem::take(&mut self.pending_claim_ids)
     }
 }
 

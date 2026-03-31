@@ -88,7 +88,6 @@ impl<F: JoltField> ReadWriteMatrixCycleMajor<F, RegistersCycleMajorEntry<F, Look
         }
         if let Some((rd, ..)) = cycle.rd_write() {
             if !regs[..len].contains(&Some(rd)) {
-                regs[len] = Some(rd);
                 len += 1;
             }
         }

@@ -87,7 +87,7 @@ pub fn bind_opening_inputs<F: JoltField, ProofTranscript: Transcript>(
 }
 
 #[cfg(feature = "zk")]
-pub fn bind_opening_inputs_zk<F: JoltField, C: JoltCurve, ProofTranscript: Transcript>(
+pub fn bind_opening_inputs_zk<F: JoltField, C: JoltCurve<F = F>, ProofTranscript: Transcript>(
     transcript: &mut ProofTranscript,
     opening_point: &[F::Challenge],
     y_com: &C::G1,
@@ -113,9 +113,11 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn setup_prover(max_num_vars: usize) -> Self::ProverSetup {
         let _span = trace_span!("DoryCommitmentScheme::setup_prover").entered();
-
         #[cfg(feature = "metal-pairing")]
         super::metal_pairing::register();
+
+        #[cfg(test)]
+        DoryGlobals::configure_test_cache_root();
 
         #[cfg(not(target_arch = "wasm32"))]
         let setup = {
@@ -270,20 +272,6 @@ impl CommitmentScheme for DoryCommitmentScheme {
 
     fn protocol_name() -> &'static [u8] {
         b"Dory"
-    }
-
-    #[cfg(feature = "zk")]
-    fn zk_generators_raw(
-        setup: &Self::ProverSetup,
-        count: usize,
-    ) -> Option<(Vec<crate::curve::Bn254G1>, crate::curve::Bn254G1)> {
-        let count = std::cmp::min(count, setup.0.g1_vec.len());
-        let g1s = setup.0.g1_vec[..count]
-            .iter()
-            .map(|g| crate::curve::Bn254G1(g.0))
-            .collect();
-        let h1 = crate::curve::Bn254G1(setup.0.h1.0);
-        Some((g1s, h1))
     }
 
     /// In Dory, the opening proof hint consists of the Pedersen commitments to the rows
@@ -497,6 +485,17 @@ where
         let g1_0 = C::G1::from(setup.0.g1_0);
         let h1 = C::G1::from(setup.0.h1);
         Some((g1_0, h1))
+    }
+
+    #[cfg(feature = "zk")]
+    fn zk_generators(setup: &Self::ProverSetup, count: usize) -> Option<(Vec<C::G1>, C::G1)> {
+        let count = std::cmp::min(count, setup.0.g1_vec.len());
+        let g1s = setup.0.g1_vec[..count]
+            .iter()
+            .map(|g| C::G1::from(*g))
+            .collect();
+        let h1 = C::G1::from(setup.0.h1);
+        Some((g1s, h1))
     }
 }
 
