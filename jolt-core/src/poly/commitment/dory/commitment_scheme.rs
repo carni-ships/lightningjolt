@@ -3,7 +3,7 @@
 use super::dory_globals::{DoryGlobals, DoryLayout};
 use super::jolt_dory_routines::{JoltG1Routines, JoltG2Routines};
 use super::wrappers::{
-    ark_to_jolt, jolt_to_ark, ArkDoryProof, ArkFr, ArkG1, ArkGT, ArkworksProverSetup,
+    ark_to_jolt, jolt_to_ark, ArkDoryProof, ArkFr, ArkG1, ArkG2, ArkGT, ArkworksProverSetup,
     ArkworksVerifierSetup, JoltToDoryTranscript, BN254,
 };
 use crate::{
@@ -497,6 +497,44 @@ where
         let h1 = C::G1::from(setup.0.h1);
         Some((g1s, h1))
     }
+}
+
+/// Extract Dory witness data for gnark Groth16 circuit.
+///
+/// Replays the Dory Fiat-Shamir on the given transcript to capture
+/// alpha/beta/gamma/d challenges and G2 composite witnesses.
+/// The transcript must be in the same state as when `verify()` would be called.
+pub fn extract_dory_witness<ProofTranscript: Transcript>(
+    proof: &ArkDoryProof,
+    setup: &ArkworksVerifierSetup,
+    transcript: &mut ProofTranscript,
+    opening_point: &[<ark_bn254::Fr as JoltField>::Challenge],
+    opening: &ark_bn254::Fr,
+    commitment: &ArkGT,
+) -> Result<dory::DoryWitnessData<ArkFr, ArkG1, ArkG2, ArkGT>, crate::utils::errors::ProofVerifyError>
+{
+    let reordered_point = reorder_opening_point_for_layout::<ark_bn254::Fr>(opening_point);
+    let ark_point: Vec<ArkFr> = reordered_point
+        .iter()
+        .rev()
+        .map(|p| {
+            let f_val: ark_bn254::Fr = (*p).into();
+            jolt_to_ark(&f_val)
+        })
+        .collect();
+    let ark_eval: ArkFr = jolt_to_ark(opening);
+
+    let mut dory_transcript = JoltToDoryTranscript::<ProofTranscript>::new(transcript);
+
+    dory::extract_witness_data::<ArkFr, BN254, JoltG1Routines, JoltG2Routines, _>(
+        *commitment,
+        ark_eval,
+        &ark_point,
+        proof,
+        &setup.clone().into_inner(),
+        &mut dory_transcript,
+    )
+    .map_err(|_| crate::utils::errors::ProofVerifyError::InternalError)
 }
 
 /// Reorders opening_point for AddressMajor layout.

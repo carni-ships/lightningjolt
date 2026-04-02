@@ -123,6 +123,28 @@ pub use proof::DoryProof;
 pub use reduce_and_fold::{DoryProverState, DoryVerifierState};
 pub use setup::{ProverSetup, VerifierSetup};
 
+/// Dory Fiat-Shamir challenges and coordinates extracted during verification.
+/// Used to build gnark Groth16 circuit witness for on-chain verification.
+#[allow(missing_docs)]
+pub struct DoryWitnessData<F, G1, G2, GT> {
+    pub alphas: Vec<F>,
+    pub betas: Vec<F>,
+    pub gamma: F,
+    pub d: F,
+    pub s1_coords: Vec<F>,
+    pub s2_coords: Vec<F>,
+    pub num_rounds: usize,
+    pub commitment: GT,
+    pub evaluation: F,
+    pub vmv_message: VMVMessage<G1, GT>,
+    pub first_messages: Vec<FirstReduceMessage<G1, G2, GT>>,
+    pub second_messages: Vec<SecondReduceMessage<G1, G2, GT>>,
+    pub final_message: ScalarProductMessage<G1, G2>,
+    pub final_p1_g2: G2,
+    pub final_p2_g2: G2,
+    pub s_product: F,
+}
+
 /// Generate or load prover and verifier setups from disk
 ///
 /// Creates or loads the transparent setup parameters for Dory PCS.
@@ -399,4 +421,139 @@ where
     evaluation_proof::verify_evaluation_proof::<F, E, M1, M2, T>(
         commitment, evaluation, point, proof, setup, transcript,
     )
+}
+
+/// Extract Dory witness data by replaying the Fiat-Shamir transcript.
+///
+/// This replays the proof messages on the given transcript to derive the
+/// alpha/beta/gamma/d challenges and compute the E2 accumulator and G2
+/// composite witnesses needed by the gnark Groth16 circuit.
+///
+/// The transcript must be in the same state as when `verify()` would be called
+/// (i.e., all prior protocol messages already absorbed).
+///
+/// # Errors
+/// Returns `DoryError::InvalidPointDimension` if point length doesn't match proof dimensions.
+///
+/// # Panics
+/// Panics if challenge scalar inversion fails (zero challenge — cryptographically negligible).
+#[allow(clippy::type_complexity)]
+pub fn extract_witness_data<F, E, M1, M2, T>(
+    commitment: E::GT,
+    evaluation: F,
+    point: &[F],
+    proof: &DoryProof<E::G1, E::G2, E::GT>,
+    setup: &VerifierSetup<E>,
+    transcript: &mut T,
+) -> Result<DoryWitnessData<F, E::G1, E::G2, E::GT>, DoryError>
+where
+    F: Field,
+    E: PairingCurve + Clone,
+    E::G1: Group<Scalar = F>,
+    E::G2: Group<Scalar = F>,
+    E::GT: Group<Scalar = F>,
+    M1: DoryRoutines<E::G1>,
+    M2: DoryRoutines<E::G2>,
+    T: primitives::transcript::Transcript<Curve = E>,
+{
+    let nu = proof.nu;
+    let sigma = proof.sigma;
+    let num_rounds = sigma;
+
+    if point.len() != nu + sigma {
+        return Err(DoryError::InvalidPointDimension {
+            expected: nu + sigma,
+            actual: point.len(),
+        });
+    }
+
+    // Replay VMV message
+    transcript.append_serde(b"vmv_c", &proof.vmv_message.c);
+    transcript.append_serde(b"vmv_d2", &proof.vmv_message.d2);
+    transcript.append_serde(b"vmv_e1", &proof.vmv_message.e1);
+
+    // s1/s2 coords matching verifier convention
+    let s1_coords: Vec<F> = point[..sigma].to_vec();
+    let mut s2_coords: Vec<F> = vec![F::zero(); sigma];
+    s2_coords[..nu].copy_from_slice(&point[sigma..sigma + nu]);
+
+    let mut alphas = Vec::with_capacity(num_rounds);
+    let mut betas = Vec::with_capacity(num_rounds);
+
+    // E2 accumulator (transparent mode)
+    let mut e2_acc: E::G2 = setup.g2_0.scale(&evaluation);
+    let mut s1_acc = F::one();
+    let mut s2_acc = F::one();
+
+    for round_idx in 0..num_rounds {
+        let first_msg = &proof.first_messages[round_idx];
+        let second_msg = &proof.second_messages[round_idx];
+
+        transcript.append_serde(b"d1_left", &first_msg.d1_left);
+        transcript.append_serde(b"d1_right", &first_msg.d1_right);
+        transcript.append_serde(b"d2_left", &first_msg.d2_left);
+        transcript.append_serde(b"d2_right", &first_msg.d2_right);
+        transcript.append_serde(b"e1_beta", &first_msg.e1_beta);
+        transcript.append_serde(b"e2_beta", &first_msg.e2_beta);
+        let beta: F = transcript.challenge_scalar(b"beta");
+        betas.push(beta);
+
+        transcript.append_serde(b"c_plus", &second_msg.c_plus);
+        transcript.append_serde(b"c_minus", &second_msg.c_minus);
+        transcript.append_serde(b"e1_plus", &second_msg.e1_plus);
+        transcript.append_serde(b"e1_minus", &second_msg.e1_minus);
+        transcript.append_serde(b"e2_plus", &second_msg.e2_plus);
+        transcript.append_serde(b"e2_minus", &second_msg.e2_minus);
+        let alpha: F = transcript.challenge_scalar(b"alpha");
+        alphas.push(alpha);
+
+        // Update E2 accumulator and scalar accumulators
+        let alpha_inv = alpha.inv().unwrap();
+        let beta_inv = beta.inv().unwrap();
+
+        e2_acc = e2_acc
+            + second_msg.e2_plus.scale(&alpha)
+            + second_msg.e2_minus.scale(&alpha_inv)
+            + first_msg.e2_beta.scale(&beta_inv);
+
+        let coord_idx = num_rounds - 1 - round_idx;
+        let y_t = &s1_coords[coord_idx];
+        let x_t = &s2_coords[coord_idx];
+        let one = F::one();
+        s1_acc = s1_acc * (alpha * (one - *y_t) + *y_t);
+        s2_acc = s2_acc * (alpha_inv * (one - *x_t) + *x_t);
+    }
+
+    let gamma: F = transcript.challenge_scalar(b"gamma");
+    transcript.append_serde(b"final_e1", &proof.final_message.e1);
+    transcript.append_serde(b"final_e2", &proof.final_message.e2);
+    let d: F = transcript.challenge_scalar(b"d");
+
+    // Compute G2 composite witnesses for the gnark pairing equation
+    let d_inv = d.inv().unwrap();
+    let neg_gamma = F::zero() - gamma;
+
+    let final_p1_g2 = proof.final_message.e2 + setup.g2_0.scale(&d_inv);
+    let final_p2_g2 = (e2_acc + setup.g2_0.scale(&(d_inv * s1_acc))).scale(&neg_gamma);
+
+    let s_product = s1_acc * s2_acc;
+
+    Ok(DoryWitnessData {
+        alphas,
+        betas,
+        gamma,
+        d,
+        s1_coords,
+        s2_coords,
+        num_rounds,
+        commitment,
+        evaluation,
+        vmv_message: proof.vmv_message.clone(),
+        first_messages: proof.first_messages.clone(),
+        second_messages: proof.second_messages.clone(),
+        final_message: proof.final_message.clone(),
+        final_p1_g2,
+        final_p2_g2,
+        s_product,
+    })
 }

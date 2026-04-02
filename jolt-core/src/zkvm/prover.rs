@@ -2247,7 +2247,7 @@ mod tests {
         prover::JoltProverPreprocessing,
         ram::populate_memory_states,
         verifier::{JoltVerifier, JoltVerifierPreprocessing},
-        RV64IMACProver, RV64IMACVerifier,
+        KeccakProver, KeccakVerifier, RV64IMACProver, RV64IMACVerifier,
     };
     #[cfg(feature = "zk")]
     use crate::{curve::JoltCurve, field::JoltField};
@@ -2944,6 +2944,618 @@ mod tests {
         )
         .expect("Failed to create verifier");
         verifier.verify().expect("Failed to verify proof");
+    }
+
+    /// E2E test with KeccakTranscript for on-chain verifier compatibility.
+    /// Validates that the full Jolt pipeline works with Keccak-based Fiat-Shamir,
+    /// producing proofs verifiable by the Solidity contracts.
+    #[test]
+    #[serial]
+    fn muldiv_e2e_keccak() {
+        DoryGlobals::reset();
+        let mut program = host::Program::new("muldiv-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
+        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
+
+        let shared_preprocessing = JoltSharedPreprocessing::new(
+            bytecode.clone(),
+            io_device.memory_layout.clone(),
+            init_memory_state,
+            1 << 16,
+            e_entry,
+        )
+        .unwrap();
+
+        let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing.clone());
+        let elf_contents_opt = program.get_elf_contents();
+        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
+        let prover = KeccakProver::gen_from_elf(
+            &prover_preprocessing,
+            elf_contents,
+            &inputs,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        let io_device = prover.program_io.clone();
+        let (jolt_proof, debug_info) = prover.prove();
+
+        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
+        let verifier = KeccakVerifier::new(
+            &verifier_preprocessing,
+            jolt_proof,
+            io_device,
+            None,
+            debug_info,
+        )
+        .expect("Failed to create verifier");
+
+        let (state_before, state_after, n_rounds) = verifier
+            .export_stage3_data()
+            .expect("Stage 3 export failed");
+        fn hex(b: &[u8; 32]) -> String {
+            b.iter().map(|x| format!("{x:02x}")).collect()
+        }
+        println!("=== STAGE 3 EXPORT ===");
+        println!("state_before_stage3 = 0x{}", hex(&state_before));
+        println!("state_after_stage3  = 0x{}", hex(&state_after));
+        println!("n_rounds_after      = {n_rounds}");
+        println!("=== END STAGE 3 EXPORT ===");
+    }
+
+    /// Export a full Jolt proof as JSON for on-chain Solidity verification.
+    /// Generates testdata/jolt_onchain_proof.json consumed by JoltE2ETest.t.sol.
+    #[cfg(not(feature = "zk"))]
+    #[test]
+    #[serial]
+    fn export_onchain_proof_json() {
+        DoryGlobals::reset();
+        let mut program = host::Program::new("muldiv-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let inputs = postcard::to_stdvec(&[9u32, 5u32, 3u32]).unwrap();
+        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
+
+        let shared_preprocessing = JoltSharedPreprocessing::new(
+            bytecode.clone(),
+            io_device.memory_layout.clone(),
+            init_memory_state,
+            1 << 16,
+            e_entry,
+        )
+        .unwrap();
+
+        let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing.clone());
+        let elf_contents_opt = program.get_elf_contents();
+        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
+        let prover = KeccakProver::gen_from_elf(
+            &prover_preprocessing,
+            elf_contents,
+            &inputs,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        let io_device = prover.program_io.clone();
+        let (jolt_proof, debug_info) = prover.prove();
+
+        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
+        let verifier = KeccakVerifier::new(
+            &verifier_preprocessing,
+            jolt_proof,
+            io_device,
+            None,
+            debug_info,
+        )
+        .expect("Failed to create verifier");
+
+        let export_data = verifier
+            .verify_for_export()
+            .expect("verify_for_export failed");
+
+        // Build JSON manually (serde not available on main types)
+        let json = build_export_json(&export_data);
+
+        // Write to testdata directory
+        // Write to both the in-tree and external foundry test directories
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let paths = [
+            workspace_root.join("contracts/zk-onchain-verifier/foundry-test/testdata"),
+            workspace_root
+                .parent()
+                .unwrap()
+                .join("zk-onchain-verifier/foundry-test/testdata"),
+        ];
+        for dir in &paths {
+            std::fs::create_dir_all(dir).ok();
+            let path = dir.join("jolt_onchain_proof.json");
+            if std::fs::write(&path, &json).is_ok() {
+                println!("Exported on-chain proof to: {}", path.display());
+            }
+        }
+
+        // Print summary
+        println!("trace_length: {}", export_data.trace_length);
+        println!("ram_k: {}", export_data.ram_k);
+        println!("stages: {}", export_data.stage_challenges.len());
+        println!("flush_batches: {}", export_data.flush_history.len());
+        for (i, batch) in export_data.flush_history.iter().enumerate() {
+            println!("  flush[{i}]: {} claims", batch.len());
+        }
+        println!(
+            "total compressed poly rounds: {}",
+            export_data
+                .stage_compressed_polys
+                .iter()
+                .map(|s| s.len())
+                .sum::<usize>()
+        );
+    }
+
+    /// Generates a production-level on-chain proof using sha3-guest (11+ Dory rounds).
+    #[cfg(not(feature = "zk"))]
+    #[test]
+    #[serial]
+    fn export_onchain_proof_json_sha3() {
+        DoryGlobals::reset();
+        let mut program = host::Program::new("sha3-guest");
+        let (bytecode, init_memory_state, _, e_entry) = program.decode();
+        let inputs = postcard::to_stdvec(&[5u8; 32]).unwrap();
+        let (_, _, _, io_device) = program.trace(&inputs, &[], &[]);
+
+        let shared_preprocessing = JoltSharedPreprocessing::new(
+            bytecode.clone(),
+            io_device.memory_layout.clone(),
+            init_memory_state,
+            1 << 16,
+            e_entry,
+        )
+        .unwrap();
+
+        let prover_preprocessing = JoltProverPreprocessing::new(shared_preprocessing.clone());
+        let elf_contents_opt = program.get_elf_contents();
+        let elf_contents = elf_contents_opt.as_deref().expect("elf contents is None");
+        let prover = KeccakProver::gen_from_elf(
+            &prover_preprocessing,
+            elf_contents,
+            &inputs,
+            &[],
+            &[],
+            None,
+            None,
+            None,
+        );
+        let io_device = prover.program_io.clone();
+        let (jolt_proof, debug_info) = prover.prove();
+
+        let verifier_preprocessing = JoltVerifierPreprocessing::from(&prover_preprocessing);
+        let verifier = KeccakVerifier::new(
+            &verifier_preprocessing,
+            jolt_proof,
+            io_device,
+            None,
+            debug_info,
+        )
+        .expect("Failed to create verifier");
+
+        let export_data = verifier
+            .verify_for_export()
+            .expect("verify_for_export failed");
+
+        let json = build_export_json(&export_data);
+
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap();
+        let paths = [
+            workspace_root.join("contracts/zk-onchain-verifier/foundry-test/testdata"),
+            workspace_root
+                .parent()
+                .unwrap()
+                .join("zk-onchain-verifier/foundry-test/testdata"),
+        ];
+        for dir in &paths {
+            std::fs::create_dir_all(dir).ok();
+            let path = dir.join("jolt_onchain_proof_sha3.json");
+            if std::fs::write(&path, &json).is_ok() {
+                println!("Exported production proof to: {}", path.display());
+            }
+        }
+
+        println!("trace_length: {}", export_data.trace_length);
+        println!("ram_k: {}", export_data.ram_k);
+        println!("stages: {}", export_data.stage_challenges.len());
+        if let Some(ref dory) = export_data.dory_witness_json {
+            println!(
+                "dory_witness rounds: {}",
+                dory["rounds"].as_array().map(|a| a.len()).unwrap_or(0)
+            );
+        }
+        println!(
+            "total compressed poly rounds: {}",
+            export_data
+                .stage_compressed_polys
+                .iter()
+                .map(|s| s.len())
+                .sum::<usize>()
+        );
+    }
+
+    #[cfg(not(feature = "zk"))]
+    fn build_export_json(data: &crate::zkvm::onchain_export::OnChainExportData) -> String {
+        use std::fmt::Write;
+        let mut json = String::new();
+        writeln!(json, "{{").unwrap();
+
+        // Preamble
+        writeln!(json, "  \"trace_length\": {},", data.trace_length).unwrap();
+        writeln!(json, "  \"ram_k\": {},", data.ram_k).unwrap();
+        writeln!(json, "  \"entry_address\": {},", data.entry_address).unwrap();
+        writeln!(json, "  \"max_input_size\": {},", data.max_input_size).unwrap();
+        writeln!(json, "  \"max_output_size\": {},", data.max_output_size).unwrap();
+        writeln!(json, "  \"heap_size\": {},", data.heap_size).unwrap();
+        writeln!(json, "  \"inputs\": \"{}\",", data.inputs_hex).unwrap();
+        writeln!(json, "  \"outputs\": \"{}\",", data.outputs_hex).unwrap();
+        writeln!(json, "  \"panic\": {},", data.panic).unwrap();
+        writeln!(json, "  \"num_rows_bits\": {},", data.num_rows_bits).unwrap();
+
+        // Commitment bytes
+        write!(json, "  \"commitment_bytes\": [").unwrap();
+        for (i, c) in data.commitment_bytes.iter().enumerate() {
+            write!(json, "\"{}\"", c).unwrap();
+            if i < data.commitment_bytes.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        // UniSkip polys
+        writeln!(json, "  \"uniskip_polys\": [").unwrap();
+        for (i, poly) in data.uniskip_polys.iter().enumerate() {
+            write!(json, "    [").unwrap();
+            for (j, c) in poly.iter().enumerate() {
+                write!(json, "\"{}\"", c).unwrap();
+                if j < poly.len() - 1 {
+                    write!(json, ", ").unwrap();
+                }
+            }
+            write!(json, "]").unwrap();
+            if i < data.uniskip_polys.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // UniSkip challenges
+        write!(json, "  \"uniskip_challenges\": [").unwrap();
+        for (i, c) in data.uniskip_challenges.iter().enumerate() {
+            write!(json, "\"{}\"", c).unwrap();
+            if i < data.uniskip_challenges.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        // Stage challenges
+        writeln!(json, "  \"stage_challenges\": [").unwrap();
+        for (i, stage) in data.stage_challenges.iter().enumerate() {
+            write!(json, "    [").unwrap();
+            for (j, c) in stage.iter().enumerate() {
+                write!(json, "\"{}\"", c).unwrap();
+                if j < stage.len() - 1 {
+                    write!(json, ", ").unwrap();
+                }
+            }
+            write!(json, "]").unwrap();
+            if i < data.stage_challenges.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // Stage compressed polys
+        writeln!(json, "  \"stage_compressed_polys\": [").unwrap();
+        for (si, stage) in data.stage_compressed_polys.iter().enumerate() {
+            writeln!(json, "    [").unwrap();
+            for (ri, round) in stage.iter().enumerate() {
+                write!(json, "      [").unwrap();
+                for (ci, c) in round.iter().enumerate() {
+                    write!(json, "\"{}\"", c).unwrap();
+                    if ci < round.len() - 1 {
+                        write!(json, ", ").unwrap();
+                    }
+                }
+                write!(json, "]").unwrap();
+                if ri < stage.len() - 1 {
+                    writeln!(json, ",").unwrap();
+                } else {
+                    writeln!(json).unwrap();
+                }
+            }
+            write!(json, "    ]").unwrap();
+            if si < data.stage_compressed_polys.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // Flush history
+        writeln!(json, "  \"flush_history\": [").unwrap();
+        for (i, batch) in data.flush_history.iter().enumerate() {
+            write!(json, "    [").unwrap();
+            for (j, c) in batch.iter().enumerate() {
+                write!(json, "\"{}\"", c).unwrap();
+                if j < batch.len() - 1 {
+                    write!(json, ", ").unwrap();
+                }
+            }
+            write!(json, "]").unwrap();
+            if i < data.flush_history.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // Sumcheck input claims per stage
+        writeln!(json, "  \"sumcheck_input_claims\": [").unwrap();
+        for (i, batch) in data.sumcheck_input_claims.iter().enumerate() {
+            write!(json, "    [").unwrap();
+            for (j, c) in batch.iter().enumerate() {
+                write!(json, "\"{}\"", c).unwrap();
+                if j < batch.len() - 1 {
+                    write!(json, ", ").unwrap();
+                }
+            }
+            write!(json, "]").unwrap();
+            if i < data.sumcheck_input_claims.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // Transcript states at stage boundaries
+        write!(json, "  \"transcript_states\": [").unwrap();
+        for (i, s) in data.transcript_states.iter().enumerate() {
+            write!(json, "\"{}\"", s).unwrap();
+            if i < data.transcript_states.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        // Transcript nRounds at stage boundaries
+        write!(json, "  \"transcript_n_rounds\": [").unwrap();
+        for (i, n) in data.transcript_n_rounds.iter().enumerate() {
+            write!(json, "{}", n).unwrap();
+            if i < data.transcript_n_rounds.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        // Opening claims
+        writeln!(json, "  \"opening_claims\": [").unwrap();
+        for (i, (id, value)) in data.opening_claims.iter().enumerate() {
+            let escaped_id = id.replace('"', "\\\"");
+            write!(
+                json,
+                "    {{\"id\": \"{}\", \"value\": \"{}\"}}",
+                escaped_id, value
+            )
+            .unwrap();
+            if i < data.opening_claims.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // ReadWriteConfig
+        writeln!(json, "  \"rw_config\": {{").unwrap();
+        writeln!(
+            json,
+            "    \"ram_rw_phase1_num_rounds\": {},",
+            data.rw_config.ram_rw_phase1_num_rounds
+        )
+        .unwrap();
+        writeln!(
+            json,
+            "    \"ram_rw_phase2_num_rounds\": {},",
+            data.rw_config.ram_rw_phase2_num_rounds
+        )
+        .unwrap();
+        writeln!(
+            json,
+            "    \"registers_rw_phase1_num_rounds\": {},",
+            data.rw_config.registers_rw_phase1_num_rounds
+        )
+        .unwrap();
+        writeln!(
+            json,
+            "    \"registers_rw_phase2_num_rounds\": {}",
+            data.rw_config.registers_rw_phase2_num_rounds
+        )
+        .unwrap();
+        writeln!(json, "  }},").unwrap();
+
+        // OneHotConfig
+        writeln!(json, "  \"one_hot_config\": {{").unwrap();
+        writeln!(
+            json,
+            "    \"log_k_chunk\": {},",
+            data.one_hot_config.log_k_chunk
+        )
+        .unwrap();
+        writeln!(
+            json,
+            "    \"lookups_ra_virtual_log_k_chunk\": {},",
+            data.one_hot_config.lookups_ra_virtual_log_k_chunk
+        )
+        .unwrap();
+        writeln!(json, "    \"k_chunk\": {},", data.one_hot_config.k_chunk).unwrap();
+        writeln!(json, "    \"ram_k\": {},", data.one_hot_config.ram_k).unwrap();
+        writeln!(
+            json,
+            "    \"bytecode_k\": {},",
+            data.one_hot_config.bytecode_k
+        )
+        .unwrap();
+        writeln!(
+            json,
+            "    \"instruction_d\": {},",
+            data.one_hot_config.instruction_d
+        )
+        .unwrap();
+        writeln!(
+            json,
+            "    \"bytecode_d\": {},",
+            data.one_hot_config.bytecode_d
+        )
+        .unwrap();
+        writeln!(json, "    \"ram_d\": {}", data.one_hot_config.ram_d).unwrap();
+        writeln!(json, "  }},").unwrap();
+
+        // Stage instance configs
+        writeln!(json, "  \"stage_instance_configs\": [").unwrap();
+        for (i, config) in data.stage_instance_configs.iter().enumerate() {
+            write!(json, "    {{\"num_rounds\": [").unwrap();
+            for (j, r) in config.num_rounds.iter().enumerate() {
+                write!(json, "{}", r).unwrap();
+                if j < config.num_rounds.len() - 1 {
+                    write!(json, ", ").unwrap();
+                }
+            }
+            write!(json, "], \"max_degree\": {}}}", config.max_degree).unwrap();
+            if i < data.stage_instance_configs.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // Stage intermediate values
+        writeln!(json, "  \"stage_intermediate_values\": [").unwrap();
+        for (i, stage) in data.stage_intermediate_values.iter().enumerate() {
+            write!(json, "    {{").unwrap();
+            for (j, (key, value)) in stage.iter().enumerate() {
+                write!(json, "\"{}\": \"{}\"", key, value).unwrap();
+                if j < stage.len() - 1 {
+                    write!(json, ", ").unwrap();
+                }
+            }
+            write!(json, "}}").unwrap();
+            if i < data.stage_intermediate_values.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // Accumulator openings: full dump of verifier opening accumulator
+        writeln!(json, "  \"accumulator_openings\": [").unwrap();
+        for (i, (id, point, value)) in data.accumulator_openings.iter().enumerate() {
+            let escaped_id = id.replace('"', "\\\"");
+            write!(json, "    {{\"id\": \"{}\", \"point\": [", escaped_id).unwrap();
+            for (j, p) in point.iter().enumerate() {
+                write!(json, "\"{}\"", p).unwrap();
+                if j < point.len() - 1 {
+                    write!(json, ", ").unwrap();
+                }
+            }
+            write!(json, "], \"value\": \"{}\"}}", value).unwrap();
+            if i < data.accumulator_openings.len() - 1 {
+                writeln!(json, ",").unwrap();
+            } else {
+                writeln!(json).unwrap();
+            }
+        }
+        writeln!(json, "  ],").unwrap();
+
+        // Stage 8 data
+        write!(json, "  \"stage8_committed_claims\": [").unwrap();
+        for (i, c) in data.stage8_committed_claims.iter().enumerate() {
+            write!(json, "\"{}\"", c).unwrap();
+            if i < data.stage8_committed_claims.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        write!(json, "  \"stage8_scaling_factors\": [").unwrap();
+        for (i, c) in data.stage8_scaling_factors.iter().enumerate() {
+            write!(json, "\"{}\"", c).unwrap();
+            if i < data.stage8_scaling_factors.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        write!(json, "  \"stage8_opening_point\": [").unwrap();
+        for (i, c) in data.stage8_opening_point.iter().enumerate() {
+            write!(json, "\"{}\"", c).unwrap();
+            if i < data.stage8_opening_point.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        writeln!(
+            json,
+            "  \"stage8_joint_claim\": \"{}\",",
+            data.stage8_joint_claim
+        )
+        .unwrap();
+
+        // Combined claims per stage
+        write!(json, "  \"combined_claims\": [").unwrap();
+        for (i, c) in data.combined_claims.iter().enumerate() {
+            write!(json, "\"{}\"", c).unwrap();
+            if i < data.combined_claims.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        // Karabina-transformed commitment (12 Fp values in gnark E12 A0-A11 order)
+        // Used as doryCommitment input to DoryOnChainVerifier MiMC InputHash
+        write!(json, "  \"commitment_karabina\": [").unwrap();
+        for (i, c) in data.commitment_karabina.iter().enumerate() {
+            write!(json, "\"{}\"", c).unwrap();
+            if i < data.commitment_karabina.len() - 1 {
+                write!(json, ", ").unwrap();
+            }
+        }
+        writeln!(json, "],").unwrap();
+
+        // Dory witness JSON (for gnark Groth16 circuit)
+        if let Some(ref dory_json) = data.dory_witness_json {
+            let dory_str = serde_json::to_string_pretty(dory_json).unwrap();
+            writeln!(json, "  \"dory_witness\": {}", dory_str).unwrap();
+        } else {
+            writeln!(json, "  \"dory_witness\": null").unwrap();
+        }
+
+        writeln!(json, "}}").unwrap();
+        json
     }
 
     /// Exercises std mode guest compilation (riscv64imac-zero-linux-musl custom target spec).

@@ -11,6 +11,7 @@ use crate::{
         commitment::commitment_scheme::CommitmentScheme, commitment::dory::DoryCommitmentScheme,
     },
     transcripts::Blake2bTranscript,
+    transcripts::KeccakTranscript,
     transcripts::Transcript,
 };
 use ark_bn254::Fr;
@@ -30,6 +31,7 @@ pub mod config;
 pub mod instruction;
 pub mod instruction_lookups;
 pub mod lookup_table;
+pub mod onchain_export;
 pub mod proof_serialization;
 #[cfg(feature = "prover")]
 pub mod prover;
@@ -190,6 +192,14 @@ pub type RV64IMACProver<'a> =
 pub type RV64IMACVerifier<'a> =
     JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
 pub type RV64IMACProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
+
+/// Keccak-based type aliases for on-chain verification (EVM-compatible).
+#[cfg(feature = "prover")]
+pub type KeccakProver<'a> =
+    JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
+pub type KeccakVerifier<'a> =
+    JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
+pub type KeccakProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
 
 pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     /// Gets the byte size of the serialized data

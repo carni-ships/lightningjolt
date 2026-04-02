@@ -247,6 +247,14 @@ where
     pub zk_mode: bool,
     pending_claims: Vec<F>,
     pending_claim_ids: Vec<OpeningId>,
+    /// When enabled, records a copy of each flush batch for on-chain export.
+    pub flush_history: Option<Vec<Vec<F>>>,
+    /// When enabled, records input claims appended per batched sumcheck stage.
+    pub sumcheck_input_claims_history: Option<Vec<Vec<F>>>,
+    /// When enabled, records per-instance expected output claims per batched sumcheck stage.
+    pub per_instance_output_claims: Option<Vec<Vec<F>>>,
+    /// When enabled, records the combined initial claim per batched sumcheck stage.
+    pub combined_claims_history: Option<Vec<F>>,
 }
 
 pub trait OpeningAccumulator<F: JoltField> {
@@ -575,6 +583,10 @@ where
         std::mem::take(&mut self.pending_claims)
     }
 
+    pub fn peek_pending_claims(&self) -> &[F] {
+        &self.pending_claims
+    }
+
     pub fn take_pending_claim_ids(&mut self) -> Vec<OpeningId> {
         std::mem::take(&mut self.pending_claim_ids)
     }
@@ -648,6 +660,10 @@ where
             zk_mode,
             pending_claims: Vec::new(),
             pending_claim_ids: Vec::new(),
+            flush_history: None,
+            sumcheck_input_claims_history: None,
+            per_instance_output_claims: None,
+            combined_claims_history: None,
         }
     }
 
@@ -795,6 +811,9 @@ where
     }
 
     pub fn flush_to_transcript<T: Transcript>(&mut self, transcript: &mut T) {
+        if let Some(ref mut history) = self.flush_history {
+            history.push(self.pending_claims.clone());
+        }
         for claim in self.pending_claims.drain(..) {
             transcript.append_scalar(b"opening_claim", &claim);
         }
@@ -805,8 +824,27 @@ where
         std::mem::take(&mut self.pending_claims)
     }
 
+    pub fn peek_pending_claims(&self) -> &[F] {
+        &self.pending_claims
+    }
+
     pub fn take_pending_claim_ids(&mut self) -> Vec<OpeningId> {
         std::mem::take(&mut self.pending_claim_ids)
+    }
+
+    /// Enable recording of flushed claims per stage for on-chain export.
+    pub fn enable_flush_recording(&mut self) {
+        self.flush_history = Some(Vec::new());
+        self.sumcheck_input_claims_history = Some(Vec::new());
+        self.per_instance_output_claims = Some(Vec::new());
+        self.combined_claims_history = Some(Vec::new());
+    }
+
+    /// Record sumcheck input claims for on-chain export.
+    pub fn record_sumcheck_input_claims(&mut self, claims: Vec<F>) {
+        if let Some(ref mut history) = self.sumcheck_input_claims_history {
+            history.push(claims);
+        }
     }
 }
 

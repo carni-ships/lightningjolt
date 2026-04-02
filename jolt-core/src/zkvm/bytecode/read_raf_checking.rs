@@ -698,7 +698,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T>
 }
 
 pub struct BytecodeReadRafSumcheckVerifier<F: JoltField> {
-    params: BytecodeReadRafSumcheckParams<F>,
+    pub(crate) params: BytecodeReadRafSumcheckParams<F>,
 }
 
 impl<F: JoltField> BytecodeReadRafSumcheckVerifier<F> {

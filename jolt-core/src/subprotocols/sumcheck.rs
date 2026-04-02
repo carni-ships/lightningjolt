@@ -430,10 +430,13 @@ impl BatchedSumcheck {
 
         let is_zk = matches!(proof, SumcheckInstanceProof::Zk(_));
         if !is_zk {
+            let mut recorded_claims = Vec::new();
             sumcheck_instances.iter().for_each(|sumcheck| {
                 let input_claim = sumcheck.input_claim(opening_accumulator);
                 transcript.append_scalar(b"sumcheck_claim", &input_claim);
+                recorded_claims.push(input_claim);
             });
+            opening_accumulator.record_sumcheck_input_claims(recorded_claims);
         }
         let batching_coeffs: Vec<F> = transcript.challenge_vector(sumcheck_instances.len());
 
@@ -456,9 +459,14 @@ impl BatchedSumcheck {
             })
             .sum();
 
+        if let Some(ref mut history) = opening_accumulator.combined_claims_history {
+            history.push(claim);
+        }
+
         let (output_claim, r_sumcheck) =
             proof.verify(claim, max_num_rounds, max_degree, transcript)?;
 
+        let mut per_instance_claims: Vec<F> = Vec::new();
         let expected_output_claim: F = sumcheck_instances
             .iter()
             .zip(batching_coeffs.iter())
@@ -470,10 +478,15 @@ impl BatchedSumcheck {
                 // opening proof or sumcheck (in the case of virtual polynomials).
                 sumcheck.cache_openings(opening_accumulator, r_slice);
                 let claim = sumcheck.expected_output_claim(opening_accumulator, r_slice);
+                per_instance_claims.push(claim);
 
                 claim * coeff
             })
             .sum();
+
+        if let Some(ref mut history) = opening_accumulator.per_instance_output_claims {
+            history.push(per_instance_claims);
+        }
 
         if !is_zk {
             opening_accumulator.flush_to_transcript(transcript);

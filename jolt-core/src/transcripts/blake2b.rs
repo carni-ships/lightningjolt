@@ -11,7 +11,7 @@ pub struct Blake2bTranscript {
     /// 256-bit running state
     pub state: [u8; 32],
     /// We append an ordinal to each invocation of the hash
-    n_rounds: u32,
+    pub(crate) n_rounds: u32,
     #[cfg(test)]
     /// A complete history of the transcript's `state`; used for testing.
     state_history: Vec<[u8; 32]>,

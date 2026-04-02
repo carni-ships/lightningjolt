@@ -3060,6 +3060,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rayon",
  "serde",
+ "serde_json",
  "serial_test",
  "sha3",
  "strum 0.28.0",
@@ -3227,34 +3228,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jolteon"
-version = "0.1.0"
-dependencies = [
- "ark-bn254",
- "ark-ec",
- "ark-ff 0.5.0",
- "ark-std 0.5.0",
- "block",
- "clap",
- "common",
- "criterion 0.8.2",
- "hex",
- "jolt-core",
- "jolt-inlines-sha2",
- "jolt-sdk",
- "metal 0.29.0",
- "objc",
- "persistia-jolt-guest",
- "rand 0.8.5",
- "rayon",
- "serde",
- "serde_json",
- "tracing",
- "tracing-chrome",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "js-sys"
 version = "0.3.91"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3342,6 +3315,34 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1744e39d1d6a9948f4f388969627434e31128196de472883b39f148769bfe30a"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "lightningjolt"
+version = "0.1.0"
+dependencies = [
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff 0.5.0",
+ "ark-std 0.5.0",
+ "block",
+ "clap",
+ "common",
+ "criterion 0.8.2",
+ "hex",
+ "jolt-core",
+ "jolt-inlines-sha2",
+ "jolt-sdk",
+ "metal 0.29.0",
+ "objc",
+ "persistia-jolt-guest",
+ "rand 0.8.5",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-chrome",
+ "tracing-subscriber",
 ]
 
 [[package]]

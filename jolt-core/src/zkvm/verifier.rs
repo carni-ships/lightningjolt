@@ -85,10 +85,13 @@ use crate::{
         booleanity::{BooleanitySumcheckParams, BooleanitySumcheckVerifier},
         sumcheck_verifier::SumcheckInstanceVerifier,
     },
-    transcripts::Transcript,
+    transcripts::{HasState, Transcript},
     utils::{errors::ProofVerifyError, math::Math},
     zkvm::witness::CommittedPolynomial,
 };
+
+#[cfg(not(feature = "zk"))]
+use crate::zkvm::onchain_export::OnChainExportData;
 
 #[cfg(feature = "zk")]
 struct StageVerifyResult<F: JoltField> {
@@ -217,13 +220,30 @@ pub struct JoltVerifier<
     advice_reduction_verifier_untrusted: Option<AdviceClaimReductionVerifier<F>>,
     pub spartan_key: UniformSpartanKey<F>,
     pub one_hot_params: OneHotParams,
+    /// Captured BytecodeReadRaf val_poly evaluations for on-chain export.
+    #[cfg(not(feature = "zk"))]
+    pub stage6_val_poly_evals: Option<[F; 5]>,
 }
 
 #[derive(Clone, Debug)]
-#[cfg_attr(not(feature = "zk"), allow(dead_code))]
+#[allow(dead_code)]
 struct Stage8VerifyData<F: JoltField> {
     opening_ids: Vec<OpeningId>,
     constraint_coeffs: Vec<F>,
+    /// Raw committed claims (before RLC), for on-chain export.
+    claims: Vec<F>,
+    /// Scaling factors (Lagrange factors for dense/advice, 1 for RA), for on-chain export.
+    scaling_factors: Vec<F>,
+    /// Unified opening point as field elements, for on-chain export.
+    opening_point: Vec<F>,
+    /// Unified opening point as challenge type, for Dory witness export.
+    opening_point_challenges: Vec<F::Challenge>,
+    /// Joint claim = Σ γ^i * claim_i, for on-chain export.
+    joint_claim: F,
+    /// Raw gamma powers for joint commitment reconstruction.
+    gamma_powers: Vec<F>,
+    /// (CommittedPolynomial, claim) pairs for joint commitment reconstruction.
+    polynomial_claims: Vec<(CommittedPolynomial, F)>,
 }
 
 impl<
@@ -332,7 +352,73 @@ impl<
             advice_reduction_verifier_untrusted: None,
             spartan_key,
             one_hot_params,
+            #[cfg(not(feature = "zk"))]
+            stage6_val_poly_evals: None,
         })
+    }
+
+    /// Returns the transcript's raw state bytes (for export/testing).
+    /// Only available when using KeccakTranscript (state is public).
+    pub fn transcript_state_bytes(&self) -> &[u8; 32]
+    where
+        ProofTranscript: HasState,
+    {
+        self.transcript.state_bytes()
+    }
+
+    /// Returns the transcript's round counter (for export/testing).
+    pub fn transcript_n_rounds(&self) -> u32
+    where
+        ProofTranscript: HasState,
+    {
+        self.transcript.n_rounds_value()
+    }
+
+    /// Export Stage 3 verification data for Solidity test vector generation.
+    /// Returns (transcript_state_before_stage3, transcript_state_after_stage3, n_flushed_claims).
+    #[cfg(test)]
+    pub fn export_stage3_data(mut self) -> Result<([u8; 32], [u8; 32], usize), ProofVerifyError>
+    where
+        ProofTranscript: HasState,
+    {
+        fiat_shamir_preamble(
+            &self.program_io,
+            self.proof.ram_K,
+            self.proof.trace_length,
+            self.preprocessing.shared.bytecode.entry_address,
+            &mut self.transcript,
+        );
+        for commitment in &self.proof.commitments {
+            self.transcript
+                .append_serializable(b"commitment", commitment);
+        }
+        if let Some(ref untrusted_advice_commitment) = self.proof.untrusted_advice_commitment {
+            self.transcript
+                .append_serializable(b"untrusted_advice", untrusted_advice_commitment);
+        }
+        if let Some(ref trusted_advice_commitment) = self.trusted_advice_commitment {
+            self.transcript
+                .append_serializable(b"trusted_advice", trusted_advice_commitment);
+        }
+
+        let _ = self.verify_stage1()?;
+        let _ = self.verify_stage2()?;
+
+        let state_before = *self.transcript.state_bytes();
+
+        let _ = self.verify_stage3()?;
+
+        let state_after = *self.transcript.state_bytes();
+        let n_rounds_after = self.transcript.n_rounds_value();
+
+        // Continue with remaining stages to fully verify the proof
+        let _ = self.verify_stage4()?;
+        let _ = self.verify_stage5()?;
+        let _ = self.verify_stage6()?;
+        let _ = self.verify_stage7()?;
+        let _ = self.verify_stage8()?;
+
+        Ok((state_before, state_after, n_rounds_after as usize))
     }
 
     #[tracing::instrument(skip_all)]
@@ -477,6 +563,1391 @@ impl<
         }
 
         Ok(())
+    }
+
+    /// Run verification with flush recording enabled and return captured data.
+    /// Only available in non-ZK mode.
+    #[cfg(not(feature = "zk"))]
+    pub fn verify_for_export(mut self) -> Result<OnChainExportData, ProofVerifyError>
+    where
+        ProofTranscript: crate::transcripts::HasState + Clone,
+    {
+        use crate::subprotocols::sumcheck::SumcheckInstanceProof;
+        use crate::subprotocols::univariate_skip::UniSkipFirstRoundProofVariant;
+        use crate::zkvm::onchain_export::{bytes_to_hex, extract_compressed_polys, fr_to_hex};
+
+        self.opening_accumulator.enable_flush_recording();
+        let mut transcript_states = Vec::new();
+        let mut transcript_n_rounds = Vec::new();
+
+        // Extract uni skip polynomial coefficients before verification
+        let extract_uniskip_coeffs =
+            |proof: &UniSkipFirstRoundProofVariant<F, C, ProofTranscript>| -> Vec<String> {
+                match proof {
+                    UniSkipFirstRoundProofVariant::Standard(p) => {
+                        p.uni_poly.coeffs.iter().map(|c| fr_to_hex(c)).collect()
+                    }
+                    _ => vec![],
+                }
+            };
+        let uniskip1_coeffs = extract_uniskip_coeffs(&self.proof.stage1_uni_skip_first_round_proof);
+        let uniskip2_coeffs = extract_uniskip_coeffs(&self.proof.stage2_uni_skip_first_round_proof);
+
+        // Extract compressed polynomials from each stage's sumcheck proof
+        let extract_stage_polys =
+            |proof: &SumcheckInstanceProof<F, C, ProofTranscript>| -> Vec<Vec<String>> {
+                match proof {
+                    SumcheckInstanceProof::Clear(clear) => extract_compressed_polys(clear),
+                    _ => vec![],
+                }
+            };
+        let stage_compressed_polys = vec![
+            extract_stage_polys(&self.proof.stage1_sumcheck_proof),
+            extract_stage_polys(&self.proof.stage2_sumcheck_proof),
+            extract_stage_polys(&self.proof.stage3_sumcheck_proof),
+            extract_stage_polys(&self.proof.stage4_sumcheck_proof),
+            extract_stage_polys(&self.proof.stage5_sumcheck_proof),
+            extract_stage_polys(&self.proof.stage6_sumcheck_proof),
+            extract_stage_polys(&self.proof.stage7_sumcheck_proof),
+        ];
+
+        // Extract preamble data before it's consumed
+        let trace_length = self.proof.trace_length;
+        let ram_k = self.proof.ram_K;
+        let entry_address = self.preprocessing.shared.bytecode.entry_address;
+        // Must use program_io.memory_layout (same as fiat_shamir_preamble)
+        let max_input_size = self.program_io.memory_layout.max_input_size;
+        let max_output_size = self.program_io.memory_layout.max_output_size;
+        let heap_size = self.program_io.memory_layout.heap_size;
+        let inputs_hex = bytes_to_hex(&self.program_io.inputs);
+        let outputs_hex = bytes_to_hex(&self.program_io.outputs);
+        let panic = if self.program_io.panic { 1u64 } else { 0u64 };
+
+        // Serialize commitment bytes for export
+        let commitment_bytes: Vec<String> = self
+            .proof
+            .commitments
+            .iter()
+            .map(|c| {
+                let mut buf = vec![];
+                c.serialize_uncompressed(&mut buf).unwrap();
+                buf.reverse(); // LE to BE for EVM
+                bytes_to_hex(&buf)
+            })
+            .collect();
+
+        // Run full verification with flush recording
+        fiat_shamir_preamble(
+            &self.program_io,
+            self.proof.ram_K,
+            self.proof.trace_length,
+            self.preprocessing.shared.bytecode.entry_address,
+            &mut self.transcript,
+        );
+
+        for commitment in &self.proof.commitments {
+            self.transcript
+                .append_serializable(b"commitment", commitment);
+        }
+        if let Some(ref untrusted_advice_commitment) = self.proof.untrusted_advice_commitment {
+            self.transcript
+                .append_serializable(b"untrusted_advice", untrusted_advice_commitment);
+        }
+        if let Some(ref trusted_advice_commitment) = self.trusted_advice_commitment {
+            self.transcript
+                .append_serializable(b"trusted_advice", trusted_advice_commitment);
+        }
+
+        // Capture transcript state after preamble + all commitments
+        let capture_state =
+            |t: &ProofTranscript, states: &mut Vec<String>, rounds: &mut Vec<u32>| {
+                states.push(bytes_to_hex(t.state_bytes()));
+                rounds.push(t.n_rounds_value());
+            };
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let (stage1_result, uniskip_challenge1) = self.verify_stage1()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let (stage2_result, uniskip_challenge2) = self.verify_stage2()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let stage3_result = self.verify_stage3()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let stage4_result = self.verify_stage4()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let stage5_result = self.verify_stage5()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let stage6_result = self.verify_stage6()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let stage7_result = self.verify_stage7()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        // Clone transcript before stage 8 for Dory witness extraction
+        let transcript_before_stage8 = self.transcript.clone();
+
+        let stage8_data = self.verify_stage8()?;
+        capture_state(
+            &self.transcript,
+            &mut transcript_states,
+            &mut transcript_n_rounds,
+        );
+
+        let challenge_to_hex = |c: &F::Challenge| -> String {
+            let f: F = (*c).into();
+            fr_to_hex(&f)
+        };
+
+        let flush_history = self
+            .opening_accumulator
+            .flush_history
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|batch| batch.iter().map(|c| fr_to_hex(c)).collect())
+            .collect();
+
+        let sumcheck_input_claims = self
+            .opening_accumulator
+            .sumcheck_input_claims_history
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|batch| batch.iter().map(|c| fr_to_hex(c)).collect())
+            .collect();
+
+        use crate::zkvm::onchain_export::{
+            OneHotConfigExport, RwConfigExport, StageInstanceConfig,
+        };
+
+        let rw = &self.proof.rw_config;
+        let ohp = &self.one_hot_params;
+        let log_T = trace_length.log_2();
+
+        let rw_config_export = RwConfigExport {
+            ram_rw_phase1_num_rounds: rw.ram_rw_phase1_num_rounds,
+            ram_rw_phase2_num_rounds: rw.ram_rw_phase2_num_rounds,
+            registers_rw_phase1_num_rounds: rw.registers_rw_phase1_num_rounds,
+            registers_rw_phase2_num_rounds: rw.registers_rw_phase2_num_rounds,
+        };
+
+        let one_hot_config_export = OneHotConfigExport {
+            log_k_chunk: ohp.log_k_chunk,
+            lookups_ra_virtual_log_k_chunk: ohp.lookups_ra_virtual_log_k_chunk,
+            k_chunk: ohp.k_chunk,
+            ram_k: ohp.ram_k,
+            bytecode_k: ohp.bytecode_k,
+            instruction_d: ohp.instruction_d,
+            bytecode_d: ohp.bytecode_d,
+            ram_d: ohp.ram_d,
+        };
+
+        // Compute per-stage instance configs
+        let log_K_ram = ram_k.log_2();
+        let log_K_registers = common::constants::REGISTER_COUNT.ilog2() as usize;
+        // InstructionReadRaf uses LOG_K = XLEN * 2 (from instruction_lookups/mod.rs)
+        let log_K_instr = common::constants::XLEN * 2;
+
+        let n_cycle_vars = log_T;
+
+        // Stage 1: 1 instance (OuterRemaining)
+        let stage1_config = StageInstanceConfig {
+            num_rounds: vec![1 + n_cycle_vars],
+            max_degree: 3,
+        };
+
+        // Stage 2: 5 instances (RamRW, ProductVirtRemainder, InstrClaimReduction, RamRafEval, OutputSumcheck)
+        let ram_rw_total = log_K_ram + n_cycle_vars;
+        let product_virt_rounds = n_cycle_vars;
+        let instr_cr_rounds = n_cycle_vars;
+        let phase1 = self.proof.rw_config.ram_rw_phase1_num_rounds as usize;
+        let ram_raf_rounds = log_K_ram + n_cycle_vars - phase1;
+        let output_rounds = log_K_ram + n_cycle_vars - phase1;
+        let stage2_config = StageInstanceConfig {
+            num_rounds: vec![
+                ram_rw_total,
+                product_virt_rounds,
+                instr_cr_rounds,
+                ram_raf_rounds,
+                output_rounds,
+            ],
+            max_degree: 3,
+        };
+
+        // Stage 3: 3 instances (Shift, InstructionInput, RegistersClaimReduction)
+        let stage3_config = StageInstanceConfig {
+            num_rounds: vec![n_cycle_vars, n_cycle_vars, n_cycle_vars],
+            max_degree: 3,
+        };
+
+        // Stage 4: 2 instances (RegistersRW, RamValCheck)
+        let reg_rw_total = log_K_registers + n_cycle_vars;
+        let ram_val_rounds = n_cycle_vars;
+        let stage4_config = StageInstanceConfig {
+            num_rounds: vec![reg_rw_total, ram_val_rounds],
+            max_degree: 3,
+        };
+
+        // Stage 5: 3 instances (InstructionReadRaf, RamRaReduction, RegistersValEval)
+        let instr_raf_rounds = log_K_instr + n_cycle_vars;
+        let ram_ra_rounds = n_cycle_vars;
+        let reg_val_rounds = n_cycle_vars;
+        let n_virtual_ra_polys = log_K_instr / ohp.lookups_ra_virtual_log_k_chunk;
+        let stage5_config = StageInstanceConfig {
+            num_rounds: vec![instr_raf_rounds, ram_ra_rounds, reg_val_rounds],
+            max_degree: n_virtual_ra_polys + 2, // eq * product(RA_chunks) * (val + gamma*raf)
+        };
+
+        // Stage 6: 6+ instances (BytecodeReadRaf, Booleanity, HammingBooleanity, RamRaVirtual, LookupsRaVirtual, IncReduction + optional advice)
+        let bytecode_raf_rounds = ohp.bytecode_k.log_2() + n_cycle_vars;
+        let booleanity_rounds = ohp.log_k_chunk + n_cycle_vars;
+        let hamming_bool_rounds = n_cycle_vars;
+        let ram_ra_virt_rounds = n_cycle_vars; // RamRaVirtual only uses log_T rounds
+        let lookups_ra_virt_rounds = n_cycle_vars; // LookupsRaVirtual only uses log_T rounds
+        let inc_rounds = n_cycle_vars;
+        let mut stage6_num_rounds = vec![
+            bytecode_raf_rounds,
+            booleanity_rounds,
+            hamming_bool_rounds,
+            ram_ra_virt_rounds,
+            lookups_ra_virt_rounds,
+            inc_rounds,
+        ];
+        if self.trusted_advice_commitment.is_some() {
+            stage6_num_rounds.push(n_cycle_vars);
+        }
+        if self.proof.untrusted_advice_commitment.is_some() {
+            stage6_num_rounds.push(n_cycle_vars);
+        }
+        let stage6_max_degree = *[
+            ohp.bytecode_d + 1,                             // BytecodeReadRaf
+            ohp.instruction_d + ohp.bytecode_d + ohp.ram_d, // Booleanity: totalD
+            3, // HammingBooleanity, RamRaVirtual, LookupsRaVirtual, IncReduction
+        ]
+        .iter()
+        .max()
+        .unwrap();
+        let stage6_config = StageInstanceConfig {
+            num_rounds: stage6_num_rounds,
+            max_degree: stage6_max_degree,
+        };
+
+        // Stage 7: 1+ instances (HammingWeightClaimReduction + optional advice address phase)
+        let hamming_weight_rounds = ohp.log_k_chunk;
+        let mut stage7_num_rounds = vec![hamming_weight_rounds];
+        if self.trusted_advice_commitment.is_some() {
+            stage7_num_rounds.push(n_cycle_vars);
+        }
+        if self.proof.untrusted_advice_commitment.is_some() {
+            stage7_num_rounds.push(n_cycle_vars);
+        }
+        let stage7_config = StageInstanceConfig {
+            num_rounds: stage7_num_rounds,
+            max_degree: 2,
+        };
+
+        let stage_instance_configs = vec![
+            stage1_config,
+            stage2_config,
+            stage3_config,
+            stage4_config,
+            stage5_config,
+            stage6_config,
+            stage7_config,
+        ];
+
+        // Per-stage intermediate values: virtual polynomial evaluations + reference points
+        use crate::poly::opening_proof::OpeningAccumulator;
+        use crate::poly::opening_proof::SumcheckId;
+        use crate::zkvm::witness::VirtualPolynomial;
+
+        let point_to_hex = |point: &crate::poly::opening_proof::OpeningPoint<
+            { crate::poly::opening_proof::BIG_ENDIAN },
+            F,
+        >|
+         -> Vec<String> {
+            point
+                .r
+                .iter()
+                .map(|c| {
+                    let f: F = (*c).into();
+                    fr_to_hex(&f)
+                })
+                .collect()
+        };
+
+        // Stage 2 intermediate values: preprocessing evaluations for RafEval and OutputSumcheck
+        let mut stage2_intermediates: Vec<(String, String)> = Vec::new();
+        {
+            use crate::poly::identity_poly::UnmapRamAddressPolynomial;
+            use crate::poly::multilinear_polynomial::PolynomialEvaluation;
+            use crate::poly::opening_proof::{OpeningPoint, BIG_ENDIAN, LITTLE_ENDIAN};
+            use crate::poly::range_mask_polynomial::RangeMaskPolynomial;
+            use crate::zkvm::ram::{eval_io_mle, remap_address};
+            use common::constants::RAM_START_ADDRESS;
+
+            let rw = &self.proof.rw_config;
+            let phase1 = rw.ram_rw_phase1_num_rounds as usize;
+            let phase2 = rw.ram_rw_phase2_num_rounds as usize;
+            let log_K = log_K_ram;
+            let phase3_cycle_rounds = log_T - phase1;
+
+            // RafEvaluation and OutputSumcheck share the same challenge region in Stage 2.
+            // Both have round_offset = max_num_rounds - (log_T + log_K) + phase1.
+            let max_stage2_rounds = ram_rw_total; // RamRW has the most rounds in Stage 2
+            let stage2_total = log_T + log_K;
+            let offset = max_stage2_rounds - stage2_total + phase1;
+            let raf_num_rounds = log_T + log_K - phase1;
+            let r_slice = &stage2_result.challenges[offset..offset + raf_num_rounds];
+
+            // normalize_opening_point: extract address challenges, skip cycle gap
+            let addr_challenges = [
+                r_slice[..phase2].to_vec(),
+                r_slice[phase2 + phase3_cycle_rounds..].to_vec(),
+            ]
+            .concat();
+            let r_address_be: OpeningPoint<BIG_ENDIAN, F> =
+                OpeningPoint::<LITTLE_ENDIAN, F>::new(addr_challenges).match_endianness();
+
+            // unmapEval
+            let start_address = self.program_io.memory_layout.get_lowest_address();
+            let unmap_eval =
+                UnmapRamAddressPolynomial::<F>::new(log_K, start_address).evaluate(&r_address_be.r);
+            stage2_intermediates.push(("unmapEval".to_string(), fr_to_hex(&unmap_eval)));
+
+            // ioMaskEval and valIoEval use the same normalized address point
+            let input_start_remapped = remap_address(
+                self.program_io.memory_layout.input_start,
+                &self.program_io.memory_layout,
+            )
+            .unwrap() as u128;
+            let ram_start_remapped =
+                remap_address(RAM_START_ADDRESS, &self.program_io.memory_layout).unwrap() as u128;
+            let io_mask = RangeMaskPolynomial::<F>::new(input_start_remapped, ram_start_remapped);
+            let io_mask_eval = io_mask.evaluate_mle(&r_address_be.r);
+            stage2_intermediates.push(("ioMaskEval".to_string(), fr_to_hex(&io_mask_eval)));
+
+            let val_io_eval: F = eval_io_mle::<F>(&self.program_io, &r_address_be.r);
+            stage2_intermediates.push(("valIoEval".to_string(), fr_to_hex(&val_io_eval)));
+
+            // Debug: export per-instance expected output claims and flush count
+            if let Some(ref history) = self.opening_accumulator.flush_history {
+                if history.len() > 3 {
+                    let stage2_flush = &history[3];
+                    stage2_intermediates.push((
+                        "flushCount".to_string(),
+                        format!("0x{:064x}", stage2_flush.len()),
+                    ));
+                }
+            }
+            // Per-instance expected output claims from Stage 2 (index 1 in per_instance_output_claims)
+            if let Some(ref pic) = self.opening_accumulator.per_instance_output_claims {
+                // pic[0] = Stage 1, pic[1] = Stage 2
+                if pic.len() > 1 {
+                    for (i, claim) in pic[1].iter().enumerate() {
+                        stage2_intermediates
+                            .push((format!("expectedOutput_{i}"), fr_to_hex(claim)));
+                    }
+                }
+            }
+            // Export individual accumulated opening claim values for flush order verification
+            let get_virt_val = |vp: VirtualPolynomial, sc: SumcheckId| -> F {
+                self.opening_accumulator
+                    .get_virtual_polynomial_opening(vp, sc)
+                    .1
+            };
+            use crate::zkvm::witness::CommittedPolynomial as CP;
+            let get_comm_val = |cp: CP, sc: SumcheckId| -> F {
+                self.opening_accumulator
+                    .get_committed_polynomial_opening(cp, sc)
+                    .1
+            };
+            use crate::zkvm::instruction::{CircuitFlags, InstructionFlags};
+            // Instance 0 (RamRW) claims
+            stage2_intermediates.push((
+                "fc_RamVal".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::RamVal,
+                    SumcheckId::RamReadWriteChecking,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_RamRa".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::RamRa,
+                    SumcheckId::RamReadWriteChecking,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_RamInc".to_string(),
+                fr_to_hex(&get_comm_val(CP::RamInc, SumcheckId::RamReadWriteChecking)),
+            ));
+            // Instance 1 (ProductVirt) claims - PRODUCT_UNIQUE_FACTOR_VIRTUALS order
+            stage2_intermediates.push((
+                "fc_LeftInstInput".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::LeftInstructionInput,
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_RightInstInput".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::RightInstructionInput,
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_Jump".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::OpFlags(CircuitFlags::Jump),
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_WriteLookupToRD".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::OpFlags(CircuitFlags::WriteLookupOutputToRD),
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_LookupOutput".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::LookupOutput,
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_Branch".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::InstructionFlags(InstructionFlags::Branch),
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_NextIsNoop".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::NextIsNoop,
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_VirtualInst".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::OpFlags(CircuitFlags::VirtualInstruction),
+                    SumcheckId::SpartanProductVirtualization,
+                )),
+            ));
+            // Instance 2 (InstrCR) claims - only non-deduped ones
+            stage2_intermediates.push((
+                "fc_LeftLookupOperand".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::LeftLookupOperand,
+                    SumcheckId::InstructionClaimReduction,
+                )),
+            ));
+            stage2_intermediates.push((
+                "fc_RightLookupOperand".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::RightLookupOperand,
+                    SumcheckId::InstructionClaimReduction,
+                )),
+            ));
+            // Instance 3 (RafEval)
+            stage2_intermediates.push((
+                "fc_RamRaRaf".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::RamRa,
+                    SumcheckId::RamRafEvaluation,
+                )),
+            ));
+            // Instance 4 (OutputSumcheck)
+            stage2_intermediates.push((
+                "fc_RamValFinal".to_string(),
+                fr_to_hex(&get_virt_val(
+                    VirtualPolynomial::RamValFinal,
+                    SumcheckId::RamOutputCheck,
+                )),
+            ));
+
+            // ProductVirt debug: export tauHigh, r0, intermediate factors
+            {
+                use crate::poly::lagrange_poly::LagrangePolynomial;
+                let product_r0 = self
+                    .opening_accumulator
+                    .get_virtual_polynomial_opening(
+                        VirtualPolynomial::UnivariateSkip,
+                        SumcheckId::SpartanProductVirtualization,
+                    )
+                    .0;
+                let r0_f: F = product_r0.r[0].into();
+                stage2_intermediates.push(("prodVirt_r0".to_string(), fr_to_hex(&r0_f)));
+
+                let r_cycle = self
+                    .opening_accumulator
+                    .get_virtual_polynomial_opening(
+                        VirtualPolynomial::Product,
+                        SumcheckId::SpartanOuter,
+                    )
+                    .0;
+                // tau = r_cycle ++ [tau_high], tau_high was challenge_scalar_optimized
+                // We can compute tau_high from tauHigh = transcript state, but it was sampled earlier.
+                // Instead, export the r_cycle to verify it matches rCycleStage1
+                for (i, c) in r_cycle.r.iter().enumerate() {
+                    let f: F = (*c).into();
+                    stage2_intermediates.push((format!("prodVirt_rCycle_{i}"), fr_to_hex(&f)));
+                }
+
+                // Compute intermediate factors for instance 1
+                let l_inst = get_virt_val(
+                    VirtualPolynomial::LeftInstructionInput,
+                    SumcheckId::SpartanProductVirtualization,
+                );
+                let r_inst = get_virt_val(
+                    VirtualPolynomial::RightInstructionInput,
+                    SumcheckId::SpartanProductVirtualization,
+                );
+                let j_flag = get_virt_val(
+                    VirtualPolynomial::OpFlags(CircuitFlags::Jump),
+                    SumcheckId::SpartanProductVirtualization,
+                );
+                let lookup_out = get_virt_val(
+                    VirtualPolynomial::LookupOutput,
+                    SumcheckId::SpartanProductVirtualization,
+                );
+                let branch_flag = get_virt_val(
+                    VirtualPolynomial::InstructionFlags(InstructionFlags::Branch),
+                    SumcheckId::SpartanProductVirtualization,
+                );
+                let next_is_noop = get_virt_val(
+                    VirtualPolynomial::NextIsNoop,
+                    SumcheckId::SpartanProductVirtualization,
+                );
+
+                let w = LagrangePolynomial::<F>::evals::<F::Challenge, 3>(&product_r0.r[0]);
+                for (i, wi) in w.iter().enumerate() {
+                    stage2_intermediates.push((format!("prodVirt_w{i}"), fr_to_hex(wi)));
+                }
+
+                let fused_left = w[0] * l_inst + w[1] * lookup_out + w[2] * j_flag;
+                let fused_right =
+                    w[0] * r_inst + w[1] * branch_flag + w[2] * (F::one() - next_is_noop);
+                stage2_intermediates
+                    .push(("prodVirt_fusedLeft".to_string(), fr_to_hex(&fused_left)));
+                stage2_intermediates
+                    .push(("prodVirt_fusedRight".to_string(), fr_to_hex(&fused_right)));
+            }
+        }
+
+        // Stage 3 intermediate values: 10 virtual polynomial evaluations + 4 reference points
+        let mut stage3_intermediates: Vec<(String, String)> = Vec::new();
+        {
+            let get_virt = |vp: VirtualPolynomial, sc: SumcheckId| -> (String, F) {
+                let (_point, val) = self
+                    .opening_accumulator
+                    .get_virtual_polynomial_opening(vp, sc);
+                let hex = fr_to_hex(&val);
+                (hex, val)
+            };
+            let (hex, _) = get_virt(
+                VirtualPolynomial::NextUnexpandedPC,
+                SumcheckId::SpartanOuter,
+            );
+            stage3_intermediates.push(("nextUnexpandedPC".to_string(), hex));
+            let (hex, _) = get_virt(VirtualPolynomial::NextPC, SumcheckId::SpartanOuter);
+            stage3_intermediates.push(("nextPC".to_string(), hex));
+            let (hex, _) = get_virt(VirtualPolynomial::NextIsVirtual, SumcheckId::SpartanOuter);
+            stage3_intermediates.push(("nextIsVirtual".to_string(), hex));
+            let (hex, _) = get_virt(
+                VirtualPolynomial::NextIsFirstInSequence,
+                SumcheckId::SpartanOuter,
+            );
+            stage3_intermediates.push(("nextIsFirstInSeq".to_string(), hex));
+            let (hex, _) = get_virt(
+                VirtualPolynomial::NextIsNoop,
+                SumcheckId::SpartanProductVirtualization,
+            );
+            stage3_intermediates.push(("nextIsNoop".to_string(), hex));
+            let (hex, _) = get_virt(
+                VirtualPolynomial::RightInstructionInput,
+                SumcheckId::SpartanProductVirtualization,
+            );
+            stage3_intermediates.push(("rightInstructionInput".to_string(), hex));
+            let (hex, _) = get_virt(
+                VirtualPolynomial::LeftInstructionInput,
+                SumcheckId::SpartanProductVirtualization,
+            );
+            stage3_intermediates.push(("leftInstructionInput".to_string(), hex));
+            let (hex, _) = get_virt(VirtualPolynomial::RdWriteValue, SumcheckId::SpartanOuter);
+            stage3_intermediates.push(("rdWriteValue".to_string(), hex));
+            let (hex, _) = get_virt(VirtualPolynomial::Rs1Value, SumcheckId::SpartanOuter);
+            stage3_intermediates.push(("rs1Value".to_string(), hex));
+            let (hex, _) = get_virt(VirtualPolynomial::Rs2Value, SumcheckId::SpartanOuter);
+            stage3_intermediates.push(("rs2Value".to_string(), hex));
+
+            // Reference points — serialize as comma-separated hex values
+            let (point, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::NextPC,
+                SumcheckId::SpartanOuter,
+            );
+            for (i, h) in point_to_hex(&point).into_iter().enumerate() {
+                stage3_intermediates.push((format!("rOuter_{i}"), h));
+            }
+            let (point, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::LeftInstructionInput,
+                SumcheckId::SpartanProductVirtualization,
+            );
+            for (i, h) in point_to_hex(&point).into_iter().enumerate() {
+                stage3_intermediates.push((format!("rProduct_{i}"), h));
+            }
+        }
+
+        // Stage 4 intermediate values
+        let mut stage4_intermediates: Vec<(String, String)> = Vec::new();
+        {
+            use crate::zkvm::ram;
+            let log_K_ram = ram_k.log_2();
+
+            // initEval: preprocessing-dependent initial RAM MLE evaluation
+            let (ram_val_point, ram_val) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::RamVal,
+                SumcheckId::RamReadWriteChecking,
+            );
+            let r_address: Vec<F::Challenge> = ram_val_point.r[..log_K_ram].to_vec();
+            let init_eval = ram::eval_initial_ram_mle::<F>(
+                &self.preprocessing.shared.ram,
+                &self.program_io,
+                &r_address,
+            );
+            stage4_intermediates.push(("initEval".to_string(), fr_to_hex(&init_eval)));
+
+            // Opening values needed for stage 4 input claims
+            stage4_intermediates.push(("ramVal".to_string(), fr_to_hex(&ram_val)));
+            let (_, ram_val_final) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::RamValFinal,
+                SumcheckId::RamOutputCheck,
+            );
+            stage4_intermediates.push(("ramValFinal".to_string(), fr_to_hex(&ram_val_final)));
+
+            // rdWriteValue, rs1Value, rs2Value for RegistersRW input claim
+            let (_, rdw) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::RdWriteValue,
+                SumcheckId::RegistersClaimReduction,
+            );
+            stage4_intermediates.push(("rdWriteValue".to_string(), fr_to_hex(&rdw)));
+            let (_, rs1v) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::Rs1Value,
+                SumcheckId::InstructionInputVirtualization,
+            );
+            stage4_intermediates.push(("rs1Value".to_string(), fr_to_hex(&rs1v)));
+            let (_, rs2v) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::Rs2Value,
+                SumcheckId::InstructionInputVirtualization,
+            );
+            stage4_intermediates.push(("rs2Value".to_string(), fr_to_hex(&rs2v)));
+
+            // rCycleStage3: reversed stage 3 challenges (normalized opening point)
+            for (i, c) in stage3_result.challenges.iter().rev().enumerate() {
+                let f: F = (*c).into();
+                stage4_intermediates.push((format!("rCycleStage3_{i}"), fr_to_hex(&f)));
+            }
+
+            // rCycleStage2Ram: cycle portion of RamRa @ RamReadWriteChecking point
+            let (ram_ra_rw_point, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::RamRa,
+                SumcheckId::RamReadWriteChecking,
+            );
+            for (i, c) in ram_ra_rw_point.r[log_K_ram..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage4_intermediates.push((format!("rCycleStage2Ram_{i}"), fr_to_hex(&f)));
+            }
+        }
+
+        // Stage 5 intermediate values
+        let mut stage5_intermediates: Vec<(String, String)> = Vec::new();
+        {
+            use crate::poly::identity_poly::{IdentityPolynomial, OperandPolynomial, OperandSide};
+            use crate::poly::multilinear_polynomial::PolynomialEvaluation;
+            use crate::zkvm::lookup_table::LookupTables;
+            use strum::IntoEnumIterator;
+            let log_K_instr = common::constants::XLEN * 2;
+            let r_address_prime: Vec<F::Challenge> =
+                stage5_result.challenges[..log_K_instr].to_vec();
+
+            // Lookup table MLE evaluations
+            for (i, table) in LookupTables::<{ common::constants::XLEN }>::iter().enumerate() {
+                let val: F = table.evaluate_mle::<F, F::Challenge>(&r_address_prime);
+                stage5_intermediates.push((format!("valEval_{i}"), fr_to_hex(&val)));
+            }
+
+            // Operand polynomial evaluations
+            let left_eval: F = OperandPolynomial::<F>::new(log_K_instr, OperandSide::Left)
+                .evaluate(&r_address_prime);
+            stage5_intermediates.push(("leftOperandEval".to_string(), fr_to_hex(&left_eval)));
+            let right_eval: F = OperandPolynomial::<F>::new(log_K_instr, OperandSide::Right)
+                .evaluate(&r_address_prime);
+            stage5_intermediates.push(("rightOperandEval".to_string(), fr_to_hex(&right_eval)));
+
+            // Identity polynomial evaluation
+            let id_eval: F = IdentityPolynomial::<F>::new(log_K_instr).evaluate(&r_address_prime);
+            stage5_intermediates.push(("identityEval".to_string(), fr_to_hex(&id_eval)));
+
+            // InstructionReadRaf input claim values
+            let (_, lookup_output) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::LookupOutput,
+                SumcheckId::SpartanProductVirtualization,
+            );
+            stage5_intermediates.push(("lookupOutput".to_string(), fr_to_hex(&lookup_output)));
+            let (_, left_op) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::LeftLookupOperand,
+                SumcheckId::InstructionClaimReduction,
+            );
+            stage5_intermediates.push(("leftOperand".to_string(), fr_to_hex(&left_op)));
+            let (_, right_op) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::RightLookupOperand,
+                SumcheckId::InstructionClaimReduction,
+            );
+            stage5_intermediates.push(("rightOperand".to_string(), fr_to_hex(&right_op)));
+
+            // rReduction: opening point for LookupOutput @ InstructionClaimReduction
+            let (lo_point, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::LeftLookupOperand,
+                SumcheckId::InstructionClaimReduction,
+            );
+            for (i, c) in lo_point.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage5_intermediates.push((format!("rReduction_{i}"), fr_to_hex(&f)));
+            }
+
+            // RamRa claim reduction input values
+            let (ram_ra_raf_point, claim_raf) =
+                self.opening_accumulator.get_virtual_polynomial_opening(
+                    VirtualPolynomial::RamRa,
+                    SumcheckId::RamRafEvaluation,
+                );
+            stage5_intermediates.push(("claimRaf".to_string(), fr_to_hex(&claim_raf)));
+            let (ram_ra_rw_point, claim_rw) =
+                self.opening_accumulator.get_virtual_polynomial_opening(
+                    VirtualPolynomial::RamRa,
+                    SumcheckId::RamReadWriteChecking,
+                );
+            stage5_intermediates.push(("claimRw".to_string(), fr_to_hex(&claim_rw)));
+            let (ram_ra_val_point, claim_val) = self
+                .opening_accumulator
+                .get_virtual_polynomial_opening(VirtualPolynomial::RamRa, SumcheckId::RamValCheck);
+            stage5_intermediates.push(("claimVal".to_string(), fr_to_hex(&claim_val)));
+
+            // RamRa cycle points (last nCycleVars of each opening point)
+            let log_K_ram = ram_k.log_2();
+            for (i, c) in ram_ra_raf_point.r[log_K_ram..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage5_intermediates.push((format!("rCycleRaf_{i}"), fr_to_hex(&f)));
+            }
+            for (i, c) in ram_ra_rw_point.r[log_K_ram..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage5_intermediates.push((format!("rCycleRw_{i}"), fr_to_hex(&f)));
+            }
+            for (i, c) in ram_ra_val_point.r[log_K_ram..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage5_intermediates.push((format!("rCycleVal_{i}"), fr_to_hex(&f)));
+            }
+
+            // RegistersValEvaluation input
+            let (reg_val_point, registers_val) =
+                self.opening_accumulator.get_virtual_polynomial_opening(
+                    VirtualPolynomial::RegistersVal,
+                    SumcheckId::RegistersReadWriteChecking,
+                );
+            stage5_intermediates.push(("registersVal".to_string(), fr_to_hex(&registers_val)));
+            let log_K_registers = common::constants::REGISTER_COUNT.ilog2() as usize;
+            for (i, c) in reg_val_point.r[log_K_registers..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage5_intermediates.push((format!("rCycleStage4Reg_{i}"), fr_to_hex(&f)));
+            }
+        }
+
+        // Stage 6 intermediate values
+        let mut stage6_intermediates: Vec<(String, String)> = Vec::new();
+        {
+            let entry_idx = self.preprocessing.shared.bytecode.entry_bytecode_index();
+            stage6_intermediates.push(("entryBytecodeIndex".to_string(), format!("{entry_idx}")));
+
+            // BytecodeReadRaf: val_poly evaluations at normalized address point
+            if let Some(val_evals) = &self.stage6_val_poly_evals {
+                for (i, val) in val_evals.iter().enumerate() {
+                    stage6_intermediates.push((format!("valPolyEval_{i}"), fr_to_hex(val)));
+                }
+            }
+
+            // BytecodeReadRaf: rCycles (5 cycle reference points from prior stages)
+            // These are the cycle portions of the virtual polynomial opening points
+            // that bytecodeReadRaf references
+            // rCycle1: Imm @ SpartanOuter
+            let (rc1, _) = self
+                .opening_accumulator
+                .get_virtual_polynomial_opening(VirtualPolynomial::Imm, SumcheckId::SpartanOuter);
+            for (i, c) in rc1.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycle1_{i}"), fr_to_hex(&f)));
+            }
+            // rCycle2: OpFlags(Jump) @ SpartanProductVirtualization
+            let (rc2, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::OpFlags(crate::zkvm::instruction::CircuitFlags::Jump),
+                SumcheckId::SpartanProductVirtualization,
+            );
+            for (i, c) in rc2.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycle2_{i}"), fr_to_hex(&f)));
+            }
+            // rCycle3: UnexpandedPC @ SpartanShift
+            let (rc3, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::UnexpandedPC,
+                SumcheckId::SpartanShift,
+            );
+            for (i, c) in rc3.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycle3_{i}"), fr_to_hex(&f)));
+            }
+            // rCycle4: Rs1Ra @ RegistersReadWriteChecking (cycle = after register address split)
+            let (rc4_full, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::Rs1Ra,
+                SumcheckId::RegistersReadWriteChecking,
+            );
+            let reg_addr_len = (common::constants::REGISTER_COUNT as usize).log_2();
+            for (i, c) in rc4_full.r[reg_addr_len..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycle4_{i}"), fr_to_hex(&f)));
+            }
+            // rCycle5: RdWa @ RegistersValEvaluation (cycle = after register address split)
+            let (rc5_full, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::RdWa,
+                SumcheckId::RegistersValEvaluation,
+            );
+            for (i, c) in rc5_full.r[reg_addr_len..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycle5_{i}"), fr_to_hex(&f)));
+            }
+
+            // HammingBooleanity: rCycleHamming uses LookupOutput @ SpartanOuter
+            // (matching expected_output_claim in hamming_booleanity.rs)
+            let (hamming_r_cycle, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::LookupOutput,
+                SumcheckId::SpartanOuter,
+            );
+            for (i, c) in hamming_r_cycle.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycleHamming_{i}"), fr_to_hex(&f)));
+            }
+
+            // Booleanity + LookupsRaVirtual share source: InstructionRa(0) @ InstructionReadRaf
+            let log_K_chunk = self.one_hot_params.log_k_chunk;
+            let ra_virt_log_k = self.one_hot_params.lookups_ra_virtual_log_k_chunk;
+            let (instr_ra0_point, _) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::InstructionRa(0),
+                SumcheckId::InstructionReadRaf,
+            );
+
+            // Booleanity: r_address from last log_k_chunk of LE address, r_cycle from cycle portion
+            // Point is BE: [addr_BE(ra_virt_log_k) | cycle_BE(nCycleVars)]
+            // The Booleanity expected_output_claim uses:
+            //   eq(challenges, [r_address.reversed, r_cycle.reversed])
+            // where r_address/r_cycle are stored LE internally.
+            // For mleSliceReversed(ref, challenges, offset, len) = eq(ref, challenges_slice_reversed):
+            //   we need ref in BE (= LE reversed) to get eq(BE, challenges_reversed_to_BE) = eq(LE_rev, LE_rev) = eq(LE, LE)
+            let mut stage5_addr_le: Vec<F::Challenge> = instr_ra0_point.r[..ra_virt_log_k].to_vec();
+            stage5_addr_le.reverse(); // BE -> LE
+            let r_addr_bool_le = &stage5_addr_le[stage5_addr_le.len() - log_K_chunk..];
+            // Export as BE for mleSliceReversed
+            for (i, c) in r_addr_bool_le.iter().rev().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rAddressBool_{i}"), fr_to_hex(&f)));
+            }
+            // r_cycle: stored as BE in the OpeningPoint, export directly as BE
+            for (i, c) in instr_ra0_point.r[ra_virt_log_k..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycleBool_{i}"), fr_to_hex(&f)));
+            }
+
+            // RamRaVirtual: ramRaInputClaim + rCycleRamRa
+            let (ram_ra_cr_point, ram_ra_input_claim) =
+                self.opening_accumulator.get_virtual_polynomial_opening(
+                    VirtualPolynomial::RamRa,
+                    SumcheckId::RamRaClaimReduction,
+                );
+            stage6_intermediates.push((
+                "ramRaInputClaim".to_string(),
+                fr_to_hex(&ram_ra_input_claim),
+            ));
+            let log_K_ram = ram_k.log_2();
+            for (i, c) in ram_ra_cr_point.r[log_K_ram..].iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycleRamRa_{i}"), fr_to_hex(&f)));
+            }
+
+            // LookupsRaVirtual: cycle from same InstructionRa(0) @ InstructionReadRaf point
+            let (_, lookups_r_cycle) = instr_ra0_point.split_at(ra_virt_log_k);
+            for (i, c) in lookups_r_cycle.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycleLookupsRa_{i}"), fr_to_hex(&f)));
+            }
+
+            // IncClaimReduction values
+            let (_, inc_v1) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamInc,
+                SumcheckId::RamReadWriteChecking,
+            );
+            stage6_intermediates.push(("incV1".to_string(), fr_to_hex(&inc_v1)));
+            let (_, inc_v2) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamInc,
+                SumcheckId::RamValCheck,
+            );
+            stage6_intermediates.push(("incV2".to_string(), fr_to_hex(&inc_v2)));
+            let (_, inc_w1) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdInc,
+                SumcheckId::RegistersReadWriteChecking,
+            );
+            stage6_intermediates.push(("incW1".to_string(), fr_to_hex(&inc_w1)));
+            let (_, inc_w2) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdInc,
+                SumcheckId::RegistersValEvaluation,
+            );
+            stage6_intermediates.push(("incW2".to_string(), fr_to_hex(&inc_w2)));
+
+            // Inc reduction cycle points
+            let (ram_inc_rw_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamInc,
+                SumcheckId::RamReadWriteChecking,
+            );
+            // RamInc point is (log_K_ram + nCycleVars) in RamRW, cycle = last nCycleVars
+            for (i, c) in ram_inc_rw_point.r[ram_inc_rw_point.r.len() - n_cycle_vars..]
+                .iter()
+                .enumerate()
+            {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycleIncStage2_{i}"), fr_to_hex(&f)));
+            }
+            let (ram_inc_val_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RamInc,
+                SumcheckId::RamValCheck,
+            );
+            for (i, c) in ram_inc_val_point.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("rCycleIncStage4_{i}"), fr_to_hex(&f)));
+            }
+            let (rd_inc_rw_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdInc,
+                SumcheckId::RegistersReadWriteChecking,
+            );
+            for (i, c) in rd_inc_rw_point.r[rd_inc_rw_point.r.len() - n_cycle_vars..]
+                .iter()
+                .enumerate()
+            {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("sCycleIncStage4_{i}"), fr_to_hex(&f)));
+            }
+            let (rd_inc_val_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::RdInc,
+                SumcheckId::RegistersValEvaluation,
+            );
+            for (i, c) in rd_inc_val_point.r.iter().enumerate() {
+                let f: F = (*c).into();
+                stage6_intermediates.push((format!("sCycleIncStage5_{i}"), fr_to_hex(&f)));
+            }
+        }
+
+        // Stage 7 intermediate values
+        let mut stage7_intermediates: Vec<(String, String)> = Vec::new();
+        {
+            let n_instr = self.one_hot_params.instruction_d;
+            let n_bytecode = self.one_hot_params.bytecode_d;
+            let n_ram = self.one_hot_params.ram_d;
+            let log_K_chunk = self.one_hot_params.log_k_chunk;
+
+            // hwClaims: 1 for InstructionRa/BytecodeRa, ram_hw_factor for RamRa
+            for i in 0..(n_instr + n_bytecode) {
+                stage7_intermediates.push((format!("hwClaim_{i}"), fr_to_hex(&F::one())));
+            }
+            let (_, ram_hw_factor) = self.opening_accumulator.get_virtual_polynomial_opening(
+                VirtualPolynomial::RamHammingWeight,
+                SumcheckId::RamHammingBooleanity,
+            );
+            for i in 0..n_ram {
+                stage7_intermediates.push((
+                    format!("hwClaim_{}", n_instr + n_bytecode + i),
+                    fr_to_hex(&ram_hw_factor),
+                ));
+            }
+
+            // boolClaims: from Booleanity sumcheck flushed values
+            // These are the committed Ra polynomial openings at the Booleanity point
+            for i in 0..n_instr {
+                let (_, v) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::InstructionRa(i),
+                    SumcheckId::Booleanity,
+                );
+                stage7_intermediates.push((format!("boolClaim_{i}"), fr_to_hex(&v)));
+            }
+            for i in 0..n_bytecode {
+                let (_, v) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::BytecodeRa(i),
+                    SumcheckId::Booleanity,
+                );
+                stage7_intermediates.push((format!("boolClaim_{}", n_instr + i), fr_to_hex(&v)));
+            }
+            for i in 0..n_ram {
+                let (_, v) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamRa(i),
+                    SumcheckId::Booleanity,
+                );
+                stage7_intermediates.push((
+                    format!("boolClaim_{}", n_instr + n_bytecode + i),
+                    fr_to_hex(&v),
+                ));
+            }
+
+            // virtClaims: from InstructionRaVirtualization/RamRaVirtualization
+            for i in 0..n_instr {
+                let (_, v) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::InstructionRa(i),
+                    SumcheckId::InstructionRaVirtualization,
+                );
+                stage7_intermediates.push((format!("virtClaim_{i}"), fr_to_hex(&v)));
+            }
+            for i in 0..n_bytecode {
+                let (_, v) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::BytecodeRa(i),
+                    SumcheckId::BytecodeReadRaf,
+                );
+                stage7_intermediates.push((format!("virtClaim_{}", n_instr + i), fr_to_hex(&v)));
+            }
+            for i in 0..n_ram {
+                let (_, v) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamRa(i),
+                    SumcheckId::RamRaVirtualization,
+                );
+                stage7_intermediates.push((
+                    format!("virtClaim_{}", n_instr + n_bytecode + i),
+                    fr_to_hex(&v),
+                ));
+            }
+
+            // rAddrBool: address portion of Booleanity point (first log_K_chunk)
+            let (bool_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                CommittedPolynomial::InstructionRa(0),
+                SumcheckId::Booleanity,
+            );
+            for (i, c) in bool_point.r[..log_K_chunk].iter().enumerate() {
+                let f: F = (*c).into();
+                stage7_intermediates.push((format!("rAddrBool_{i}"), fr_to_hex(&f)));
+            }
+
+            // rAddrVirt: per-polynomial virtualization address points
+            for i in 0..n_instr {
+                let (point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::InstructionRa(i),
+                    SumcheckId::InstructionRaVirtualization,
+                );
+                for (j, c) in point.r[..log_K_chunk].iter().enumerate() {
+                    let f: F = (*c).into();
+                    stage7_intermediates.push((format!("rAddrVirt_{i}_{j}"), fr_to_hex(&f)));
+                }
+            }
+            for i in 0..n_bytecode {
+                let (point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::BytecodeRa(i),
+                    SumcheckId::BytecodeReadRaf,
+                );
+                for (j, c) in point.r[..log_K_chunk].iter().enumerate() {
+                    let f: F = (*c).into();
+                    stage7_intermediates
+                        .push((format!("rAddrVirt_{}_{j}", n_instr + i), fr_to_hex(&f)));
+                }
+            }
+            for i in 0..n_ram {
+                let (point, _) = self.opening_accumulator.get_committed_polynomial_opening(
+                    CommittedPolynomial::RamRa(i),
+                    SumcheckId::RamRaVirtualization,
+                );
+                for (j, c) in point.r[..log_K_chunk].iter().enumerate() {
+                    let f: F = (*c).into();
+                    stage7_intermediates.push((
+                        format!("rAddrVirt_{}_{j}", n_instr + n_bytecode + i),
+                        fr_to_hex(&f),
+                    ));
+                }
+            }
+        }
+
+        let stage_intermediate_values = vec![
+            vec![],               // Stage 1
+            stage2_intermediates, // Stage 2
+            stage3_intermediates, // Stage 3
+            stage4_intermediates, // Stage 4
+            stage5_intermediates, // Stage 5
+            stage6_intermediates, // Stage 6
+            stage7_intermediates, // Stage 7
+        ];
+
+        // Extract Dory witness and Karabina commitment for on-chain MiMC InputHash
+        let dory_export: (Option<serde_json::Value>, Vec<String>) = {
+            use crate::poly::commitment::dory::extract_dory_witness;
+            use crate::zkvm::onchain_export::dory_witness_to_json;
+            use ark_bn254::Fq;
+            use ark_ff::PrimeField;
+
+            let mut replay_transcript = transcript_before_stage8;
+
+            replay_transcript.append_scalars(b"rlc_claims", &stage8_data.claims);
+            let _gamma_powers: Vec<F> =
+                replay_transcript.challenge_scalar_powers(stage8_data.claims.len());
+
+            // Reconstruct joint commitment from gamma_powers and commitments
+            let joint_commitment = {
+                let expected_polynomials = all_committed_polynomials(&self.one_hot_params);
+                let mut commitments_map: HashMap<CommittedPolynomial, PCS::Commitment> =
+                    HashMap::new();
+                for (polynomial, commitment) in expected_polynomials
+                    .into_iter()
+                    .zip(&self.proof.commitments)
+                {
+                    commitments_map.insert(polynomial, commitment.clone());
+                }
+                if let Some(ref c) = self.trusted_advice_commitment {
+                    commitments_map.insert(CommittedPolynomial::TrustedAdvice, c.clone());
+                }
+                if let Some(ref c) = self.proof.untrusted_advice_commitment {
+                    commitments_map.insert(CommittedPolynomial::UntrustedAdvice, c.clone());
+                }
+                let mut rlc_map: HashMap<CommittedPolynomial, F> = HashMap::new();
+                for (gamma, (poly, _)) in stage8_data
+                    .gamma_powers
+                    .iter()
+                    .zip(stage8_data.polynomial_claims.iter())
+                {
+                    *rlc_map.entry(*poly).or_insert(F::zero()) += *gamma;
+                }
+                let (coeffs, coms): (Vec<F>, Vec<_>) = rlc_map
+                    .into_iter()
+                    .map(|(k, v)| (v, commitments_map.remove(&k).unwrap()))
+                    .unzip();
+                PCS::combine_commitments(&coms, &coeffs)
+            };
+
+            // SAFETY: These casts are sound because PCS = DoryCommitmentScheme
+            // and verify_for_export is only called with Dory in non-ZK mode.
+            let dory_proof: &crate::poly::commitment::dory::ArkDoryProof = unsafe {
+                &*(&self.proof.joint_opening_proof as *const PCS::Proof
+                    as *const crate::poly::commitment::dory::ArkDoryProof)
+            };
+            let dory_setup: &crate::poly::commitment::dory::ArkworksVerifierSetup = unsafe {
+                &*(&self.preprocessing.generators as *const PCS::VerifierSetup
+                    as *const crate::poly::commitment::dory::ArkworksVerifierSetup)
+            };
+            let dory_commitment: &crate::poly::commitment::dory::ArkGT = unsafe {
+                &*(&joint_commitment as *const PCS::Commitment
+                    as *const crate::poly::commitment::dory::ArkGT)
+            };
+            let dory_opening_point: &[<ark_bn254::Fr as JoltField>::Challenge] = unsafe {
+                std::slice::from_raw_parts(
+                    stage8_data.opening_point_challenges.as_ptr() as *const _,
+                    stage8_data.opening_point_challenges.len(),
+                )
+            };
+            let dory_joint_claim: &ark_bn254::Fr =
+                unsafe { &*(&stage8_data.joint_claim as *const F as *const ark_bn254::Fr) };
+
+            // Karabina-transformed commitment for MiMC InputHash
+            let fq_hex = |f: &Fq| -> String {
+                let bigint = f.into_bigint();
+                let limbs = bigint.as_ref();
+                let mut hex = String::new();
+                for &limb in limbs.iter().rev() {
+                    hex.push_str(&format!("{:016x}", limb));
+                }
+                format!("0x{}", hex)
+            };
+            let nine = Fq::from(9u64);
+            let karabina = |a0: &Fq, a1: &Fq| -> String { fq_hex(&(*a0 - nine * a1)) };
+            let c = &dory_commitment.0;
+            let karabina_values = vec![
+                karabina(&c.c0.c0.c0, &c.c0.c0.c1), // A0
+                karabina(&c.c1.c0.c0, &c.c1.c0.c1), // A1
+                karabina(&c.c0.c1.c0, &c.c0.c1.c1), // A2
+                karabina(&c.c1.c1.c0, &c.c1.c1.c1), // A3
+                karabina(&c.c0.c2.c0, &c.c0.c2.c1), // A4
+                karabina(&c.c1.c2.c0, &c.c1.c2.c1), // A5
+                fq_hex(&c.c0.c0.c1),                // A6
+                fq_hex(&c.c1.c0.c1),                // A7
+                fq_hex(&c.c0.c1.c1),                // A8
+                fq_hex(&c.c1.c1.c1),                // A9
+                fq_hex(&c.c0.c2.c1),                // A10
+                fq_hex(&c.c1.c2.c1),                // A11
+            ];
+
+            let witness_json = match extract_dory_witness(
+                dory_proof,
+                dory_setup,
+                &mut replay_transcript,
+                dory_opening_point,
+                dory_joint_claim,
+                dory_commitment,
+            ) {
+                Ok(witness) => Some(dory_witness_to_json(&witness, dory_setup)),
+                Err(e) => {
+                    tracing::warn!("Failed to extract Dory witness: {:?}", e);
+                    None
+                }
+            };
+
+            (witness_json, karabina_values)
+        };
+
+        Ok(OnChainExportData {
+            stage_challenges: vec![
+                stage1_result
+                    .challenges
+                    .iter()
+                    .map(challenge_to_hex)
+                    .collect(),
+                stage2_result
+                    .challenges
+                    .iter()
+                    .map(challenge_to_hex)
+                    .collect(),
+                stage3_result
+                    .challenges
+                    .iter()
+                    .map(challenge_to_hex)
+                    .collect(),
+                stage4_result
+                    .challenges
+                    .iter()
+                    .map(challenge_to_hex)
+                    .collect(),
+                stage5_result
+                    .challenges
+                    .iter()
+                    .map(challenge_to_hex)
+                    .collect(),
+                stage6_result
+                    .challenges
+                    .iter()
+                    .map(challenge_to_hex)
+                    .collect(),
+                stage7_result
+                    .challenges
+                    .iter()
+                    .map(challenge_to_hex)
+                    .collect(),
+            ],
+            uniskip_polys: vec![uniskip1_coeffs, uniskip2_coeffs],
+            uniskip_challenges: vec![
+                challenge_to_hex(&uniskip_challenge1),
+                challenge_to_hex(&uniskip_challenge2),
+            ],
+            stage_compressed_polys,
+            sumcheck_input_claims,
+            flush_history,
+            opening_claims: self
+                .proof
+                .opening_claims
+                .0
+                .iter()
+                .map(|(id, (_point, value))| (format!("{id:?}"), fr_to_hex(value)))
+                .collect(),
+            commitment_bytes,
+            transcript_states,
+            transcript_n_rounds,
+            trace_length,
+            ram_k,
+            entry_address,
+            max_input_size,
+            max_output_size,
+            heap_size,
+            inputs_hex,
+            outputs_hex,
+            panic,
+            num_rows_bits: self.spartan_key.num_rows_bits(),
+            stage_instance_configs,
+            stage_intermediate_values,
+            rw_config: rw_config_export,
+            one_hot_config: one_hot_config_export,
+            accumulator_openings: self
+                .opening_accumulator
+                .openings
+                .iter()
+                .map(|(id, (point, value))| {
+                    let point_hex: Vec<String> = point
+                        .r
+                        .iter()
+                        .map(|c| {
+                            let f: F = (*c).into();
+                            fr_to_hex(&f)
+                        })
+                        .collect();
+                    (format!("{id:?}"), point_hex, fr_to_hex(value))
+                })
+                .collect(),
+            stage8_committed_claims: stage8_data.claims.iter().map(|c| fr_to_hex(c)).collect(),
+            stage8_scaling_factors: stage8_data
+                .scaling_factors
+                .iter()
+                .map(|c| fr_to_hex(c))
+                .collect(),
+            stage8_opening_point: stage8_data
+                .opening_point
+                .iter()
+                .map(|c| fr_to_hex(c))
+                .collect(),
+            stage8_joint_claim: fr_to_hex(&stage8_data.joint_claim),
+            dory_witness_json: dory_export.0,
+            commitment_karabina: dory_export.1,
+            combined_claims: self
+                .opening_accumulator
+                .combined_claims_history
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|c| fr_to_hex(c))
+                .collect(),
+        })
     }
 
     #[cfg_attr(not(feature = "zk"), allow(unused_variables))]
@@ -1019,9 +2490,19 @@ impl<
             ))
         }
         #[cfg(not(feature = "zk"))]
-        Ok(StageVerifyResult {
-            challenges: r_stage6,
-        })
+        {
+            use crate::poly::multilinear_polynomial::PolynomialEvaluation;
+            use crate::subprotocols::sumcheck_verifier::SumcheckInstanceParams;
+            let opening_point = bytecode_read_raf.params.normalize_opening_point(&r_stage6);
+            let (r_address_prime, _) = opening_point.split_at(bytecode_read_raf.params.log_K);
+            self.stage6_val_poly_evals = Some(std::array::from_fn(|i| {
+                bytecode_read_raf.params.val_polys[i].evaluate(&r_address_prime.r)
+            }));
+
+            Ok(StageVerifyResult {
+                challenges: r_stage6,
+            })
+        }
     }
 
     #[cfg(feature = "zk")]
@@ -1487,6 +2968,9 @@ impl<
             .map(|(gamma, claim)| *gamma * claim)
             .sum();
 
+        // Save polynomial_claims for export before moving into state
+        let polynomial_claims_export = polynomial_claims.clone();
+
         // Build state for computing joint commitment/claim
         let state = DoryOpeningState {
             opening_point: opening_point.r.clone(),
@@ -1566,9 +3050,18 @@ impl<
             bind_opening_inputs::<F, _>(&mut self.transcript, &opening_point.r, &joint_claim);
         }
 
+        let opening_point_scalars: Vec<F> = opening_point.r.iter().map(|c| (*c).into()).collect();
+
         Ok(Stage8VerifyData {
             opening_ids,
             constraint_coeffs,
+            claims,
+            scaling_factors,
+            opening_point: opening_point_scalars,
+            opening_point_challenges: opening_point.r.clone(),
+            joint_claim,
+            gamma_powers,
+            polynomial_claims: polynomial_claims_export,
         })
     }
 

@@ -66,13 +66,26 @@ fn gt_to_json(gt: &ArkGT) -> Value {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let (prover_setup, verifier_setup) = setup::<BN254>(10);
+    // Parse optional --rounds flag (default: 11 for production, 4 for quick testing)
+    let args: Vec<String> = std::env::args().collect();
+    let num_rounds: usize = if let Some(pos) = args.iter().position(|a| a == "--rounds") {
+        args.get(pos + 1)
+            .expect("--rounds requires a value")
+            .parse()
+            .expect("--rounds must be a number")
+    } else {
+        11
+    };
 
-    let nu = 4;
-    let sigma = 4;
-    let poly_size = 1 << (nu + sigma);
-    let num_vars = nu + sigma;
-    let num_rounds = std::cmp::max(nu, sigma);
+    let nu = num_rounds;
+    let sigma = num_rounds;
+    let srs_size = nu + sigma;
+    eprintln!("Generating SRS for {srs_size} variables ({num_rounds} rounds)...");
+    let (prover_setup, verifier_setup) = setup::<BN254>(srs_size);
+    eprintln!("SRS generation complete.");
+
+    let poly_size = 1 << srs_size;
+    let num_vars = srs_size;
 
     let coefficients: Vec<ArkFr> = (0..poly_size).map(|_| ArkFr::random()).collect();
     let poly = ArkworksPolynomial::new(coefficients);
@@ -259,7 +272,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let lhs = BN254::multi_pair(
             &[p1_g1, verifier_setup.h1, p3_g1, p4_g1],
-            &[final_p1_g2, final_p2_g2, verifier_setup.h2, verifier_setup.g2_0],
+            &[
+                final_p1_g2,
+                final_p2_g2,
+                verifier_setup.h2,
+                verifier_setup.g2_0,
+            ],
         );
 
         if lhs == rhs {
@@ -389,8 +407,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     });
 
-    let output_path = "dory_witness.json";
-    fs::write(output_path, serde_json::to_string_pretty(&witness)?)?;
+    let output_path = format!("dory_witness_{num_rounds}.json");
+    fs::write(&output_path, serde_json::to_string_pretty(&witness)?)?;
     eprintln!("Witness exported to {output_path} ({num_rounds} rounds)");
 
     Ok(())
