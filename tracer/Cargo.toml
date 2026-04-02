@@ -22,9 +22,11 @@ name = "jolt-emu"
 path = "src/main.rs"
 
 [features]
-default = ["std"]
+default = ["std", "platform-random"]
+# jolt-platform's getrandom/sys_rand symbols, separate from std so SP1 guest
+# builds can use std without conflicting with SP1's own getrandom.
+platform-random = ["jolt-platform/std"]
 std = [
-    "jolt-platform/std",
     "common/std",
     "fnv/std",
     "object/std",

@@ -4,9 +4,7 @@
 //! per-dispatch allocation overhead (~2-3ms saved per call).
 #![allow(dead_code)]
 
-use metal::{
-    CommandQueue, ComputePipelineState, Device, Library, MTLResourceOptions, MTLSize,
-};
+use metal::{CommandQueue, ComputePipelineState, Device, Library, MTLResourceOptions, MTLSize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -206,11 +204,8 @@ pub(crate) fn gpu_miller_loop(g1: &[G1AffineLimbs], g2: &[G2AffineLimbs]) -> Vec
     encoder.set_buffer(2, Some(&buf_result), 0);
 
     // Use smaller thread group for Miller loop to reduce register spilling
-    let thread_group_size = MTLSize::new(
-        std::cmp::min(n as u64, MILLER_LOOP_THREAD_GROUP_SIZE),
-        1,
-        1,
-    );
+    let thread_group_size =
+        MTLSize::new(std::cmp::min(n as u64, MILLER_LOOP_THREAD_GROUP_SIZE), 1, 1);
     let grid_size = MTLSize::new(n as u64, 1, 1);
 
     encoder.dispatch_threads(grid_size, thread_group_size);

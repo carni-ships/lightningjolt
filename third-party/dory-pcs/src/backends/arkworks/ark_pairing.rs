@@ -473,9 +473,11 @@ mod pairing_helpers {
                                 multi_miller_loop_single_acc(&ps_prep, g2_chunk)
                             })
                             .reduce(
-                                || ark_ec::pairing::MillerLoopOutput(
-                                    <<Bn254 as Pairing>::TargetField>::one(),
-                                ),
+                                || {
+                                    ark_ec::pairing::MillerLoopOutput(
+                                        <<Bn254 as Pairing>::TargetField>::one(),
+                                    )
+                                },
                                 |a, b| ark_ec::pairing::MillerLoopOutput(a.0 * b.0),
                             )
                     } else {
@@ -498,9 +500,11 @@ mod pairing_helpers {
                                 multi_miller_loop_single_acc(&ps_prep, &qs_prep)
                             })
                             .reduce(
-                                || ark_ec::pairing::MillerLoopOutput(
-                                    <<Bn254 as Pairing>::TargetField>::one(),
-                                ),
+                                || {
+                                    ark_ec::pairing::MillerLoopOutput(
+                                        <<Bn254 as Pairing>::TargetField>::one(),
+                                    )
+                                },
                                 |a, b| ark_ec::pairing::MillerLoopOutput(a.0 * b.0),
                             )
                     }
@@ -546,9 +550,11 @@ mod pairing_helpers {
                         multi_miller_loop_single_acc(&ps_prep, &qs_prep)
                     })
                     .reduce(
-                        || ark_ec::pairing::MillerLoopOutput(
-                            <<Bn254 as Pairing>::TargetField>::one(),
-                        ),
+                        || {
+                            ark_ec::pairing::MillerLoopOutput(
+                                <<Bn254 as Pairing>::TargetField>::one(),
+                            )
+                        },
                         |a, b| ark_ec::pairing::MillerLoopOutput(a.0 * b.0),
                     )
             };

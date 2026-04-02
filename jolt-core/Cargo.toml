@@ -27,6 +27,7 @@ default = ["host"]
 zk = ["dory/zk"]
 host = [
     "prover",
+    "dep:mimalloc",
     "dep:jolt-inlines-sha2",
     "dep:jolt-inlines-keccak256",
 ]
@@ -39,9 +40,12 @@ prover = [
     "dory/cache", # This includes `parallel` feature
     "dory/disk-persistence",
 ]
+# For cross-compilation to zkVM targets (SP1) that provide their own platform runtime.
+# Enables tracer/std for compilation but skips jolt-platform's getrandom/sys_rand symbols.
+sp1-guest = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "rayon", "tracer/std"]
 # This is for building jolt-core without prover capabilities, e.g. for recursion
 # jolt-core needs std and rayon to compile, so these are the minimal set of features.
-minimal = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "rayon"]
+minimal = ["sp1-guest", "tracer/platform-random"]
 allocative = ["dep:inferno"]
 monitor = ["dep:sysinfo"]
 pprof = ["dep:pprof", "dep:prost"]
@@ -81,9 +85,9 @@ tracing.workspace = true
 tracing-chrome.workspace = true
 tracing-subscriber.workspace = true
 eyre.workspace = true
-mimalloc = "0.1"
+mimalloc = { version = "0.1", optional = true }
 common.workspace = true
-tracer = { workspace = true, default-features = false, features = ["std"] }
+tracer = { workspace = true, default-features = false }
 bincode.workspace = true
 derive_more.workspace = true
 dory.workspace = true

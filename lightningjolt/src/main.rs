@@ -18,7 +18,10 @@ mod thread_tuner;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "lightningjolt", about = "Jolt prover optimizer for Apple Silicon")]
+#[command(
+    name = "lightningjolt",
+    about = "Jolt prover optimizer for Apple Silicon"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
