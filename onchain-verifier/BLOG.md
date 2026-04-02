@@ -131,14 +131,33 @@ Calldata dominates. Further compression (e.g., EIP-4844 blob transactions) could
 
 ## Deployed Contracts (Bepolia)
 
+| Contract | Address |
+|----------|---------|
+| MockGroth16Verifier | [`0xa4Df...926A`](https://bepolia.beratrail.io/address/0xa4Df0897e1bBb7BA8bb15A6cFEe266794e5c0A5e) |
+| DoryOnChainVerifier | [`0x7A2D...926A`](https://bepolia.beratrail.io/address/0x7A2D75BBE6c55C01fec0301a2018a24C8054926A) |
+| JoltVerifierPhase1 | [`0x2E9A...e6D4`](https://bepolia.beratrail.io/address/0x2E9A3875Ad364D76abCa4f0032Be04271E24e6D4) |
+| JoltVerifier | [`0x6Ae4...aa9`](https://bepolia.beratrail.io/address/0x6Ae489BAA2b10e44bCe8e11889cd9206304beaa9) |
+
+## Sample Proofs Verified On-Chain
+
+| Proof | Program | Trace | Gas | Transaction |
+|-------|---------|-------|-----|-------------|
+| muldiv | Integer multiply-divide | 1,024 steps | 4,806,421 | [`0x035e59...`](https://bepolia.beratrail.io/tx/0x035e598ea44689d72b5f8a10889214dede6b119f412084ad406d465d32f26158) |
+| sha3 | SHA3-256 hash | 8,192 steps | 5,332,785 | [`0x8fccbe...`](https://bepolia.beratrail.io/tx/0x8fccbe9e68a10f6ea7e7d606cd113c590abbf33c386cfb925c2050a5d097f934) |
+
+## Forged Proof Rejection
+
+To demonstrate soundness, we took a valid SHA3 proof and flipped a single byte in the first polynomial commitment — the minimal possible corruption. We then submitted it to the deployed verifier.
+
+The corrupted commitment poisons the Fiat-Shamir transcript from the very first hash operation. Every subsequent challenge the verifier derives is different from what the honest prover used, so the sumcheck output claim no longer matches. The verifier catches this at the earliest possible checkpoint:
+
 ```
-MockGroth16Verifier:  0xa4Df0897e1bBb7BA8bb15A6cFEe266794e5c0A5e
-DoryOnChainVerifier:  0x7A2D75BBE6c55C01fec0301a2018a24C8054926A
-JoltVerifierPhase1:   0x2E9A3875Ad364D76abCa4f0032Be04271E24e6D4
-JoltVerifier:         0x6Ae489BAA2b10e44bCe8e11889cd9206304beaa9
+Error: execution reverted: stage1: output claim mismatch
 ```
 
-Valid SHA3 proof tx: [`0x8fccbe9e...`](https://bepolia.beratrail.io/tx/0x8fccbe9e68a10f6ea7e7d606cd113c590abbf33c386cfb925c2050a5d097f934)
+The Bepolia RPC node rejected the transaction during gas estimation itself — the forged proof cannot even enter the mempool as a pending transaction. This is the correct behavior: any modification to any proof element (commitments, sumcheck polynomials, evaluation claims, Groth16 proof) will cause a Fiat-Shamir divergence that the verifier detects and rejects.
+
+The forged proof submission script is included at [`foundry-test/script/SubmitFakeProof.s.sol`](onchain-verifier/foundry-test/script/SubmitFakeProof.s.sol).
 
 ---
 
