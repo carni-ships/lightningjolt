@@ -16,7 +16,6 @@ use crate::primitives::transcript::Transcript;
 use crate::setup::ProverSetup;
 use crate::mode::Transparent;
 
-use super::cascading_tree::CascadingTree;
 use super::proof::DoryPrimeProof;
 
 /// Generate a Dory-Prime proof
@@ -61,18 +60,16 @@ where
     P: MultilinearLagrange<F>,
     T: Transcript<Curve = E>,
 {
-    let num_rounds = nu.max(sigma);
+    let _num_rounds = nu.max(sigma);
 
-    // Build the cascading tree structure for parallel challenge precomputation
-    // This creates the tree structure but doesn't yet compute actual challenges
-    let tree = CascadingTree::<E>::build_for_rounds(num_rounds);
-
-    // Delegate to the standard Dory proof generation
-    // In a full Dory-Prime implementation, we would:
-    // 1. Create a ForkableDoryProverState from the polynomial
-    // 2. Build the full tree by forking transcript at each challenge
-    // 3. Compute the batch polynomial from all leaf paths
-    // 4. Prove the batch polynomial with a single opening
+    // The Dory-Prime optimization precomputes all 2^sigma challenge paths in parallel,
+    // then combines them into a single batch proof. The infrastructure is in place:
+    // - ForkableDoryProverState can be cloned and forked at each challenge
+    // - CascadingTree stores the full binary tree structure
+    // - Transcript::fork() enables parallel transcript derivation
+    //
+    // For now, we delegate to standard Dory to ensure correctness.
+    // TODO: Implement actual tree building with ForkableDoryProverState::fork()
 
     let (proof, _blinding) = crate::evaluation_proof::create_evaluation_proof::<F, E, M1, M2, T, P, Transparent>(
         polynomial,

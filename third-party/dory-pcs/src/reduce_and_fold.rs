@@ -133,6 +133,9 @@ where
     #[allow(clippy::type_complexity)]
     pub fn fork<M1, M2>(&self, challenge: (Scalar<E>, Scalar<E>)) -> (Self, FirstReduceMessage<E::G1, E::G2, E::GT>, SecondReduceMessage<E::G1, E::G2, E::GT>)
     where
+        E::G1: Group,
+        E::G2: Group<Scalar = Scalar<E>>,
+        E::GT: Group<Scalar = Scalar<E>>,
         M1: DoryRoutines<E::G1>,
         M2: DoryRoutines<E::G2>,
     {
