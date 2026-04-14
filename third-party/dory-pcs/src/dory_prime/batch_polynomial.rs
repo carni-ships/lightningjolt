@@ -12,10 +12,9 @@
 //!
 //! where alpha_i are Fiat-Shamir challenges and f_i are round-specific polynomials.
 
-use crate::primitives::arithmetic::Field;
+use crate::primitives::arithmetic::{Field, PairingCurve};
 use crate::primitives::poly::Polynomial;
 use crate::primitives::transcript::Transcript;
-use crate::primitives::arithmetic::PairingCurve;
 
 use super::cascading_tree::CascadingTree;
 

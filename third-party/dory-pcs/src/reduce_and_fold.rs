@@ -62,6 +62,214 @@ pub struct DoryProverState<'a, E: PairingCurve, M: Mode = Transparent> {
     _mode: PhantomData<M>,
 }
 
+/// Forkable prover state for Dory-Prime
+///
+/// This is a cloneable version of DoryProverState that owns its setup.
+/// It can be cloned at each challenge point to build the cascading tree.
+pub struct ForkableDoryProverState<E: PairingCurve, M: Mode = Transparent> {
+    /// Current v1 vector (G1 elements)
+    v1: Vec<E::G1>,
+    /// Current v2 vector (G2 elements)
+    v2: Vec<E::G2>,
+    /// For first round only: scalars used to construct v2 from fixed base h2
+    v2_scalars: Option<Vec<Scalar<E>>>,
+    /// Current s1 vector (scalars)
+    s1: Vec<Scalar<E>>,
+    /// Current s2 vector (scalars)
+    s2: Vec<Scalar<E>>,
+    /// Number of rounds remaining (log₂ of vector length)
+    num_rounds: usize,
+    /// Owned prover setup (cloned for forking)
+    setup: ProverSetup<E>,
+    /// Accumulated blinds
+    r_c: Scalar<E>,
+    r_d1: Scalar<E>,
+    r_d2: Scalar<E>,
+    r_e1: Scalar<E>,
+    r_e2: Scalar<E>,
+    /// Per-round blinds stored between compute and apply
+    round_d1: [Scalar<E>; 2],
+    round_d2: [Scalar<E>; 2],
+    round_c: [Scalar<E>; 2],
+    round_e1: [Scalar<E>; 2],
+    round_e2: [Scalar<E>; 2],
+    _mode: PhantomData<M>,
+}
+
+impl<E: PairingCurve, M: Mode> ForkableDoryProverState<E, M>
+where
+    <E::G1 as Group>::Scalar: Field,
+    E::G2: Group<Scalar = Scalar<E>>,
+    E::GT: Group<Scalar = Scalar<E>>,
+{
+    /// Create from a standard DoryProverState by cloning the setup
+    pub fn from_dory_state(state: &DoryProverState<'_, E, M>) -> Self {
+        Self {
+            v1: state.v1.clone(),
+            v2: state.v2.clone(),
+            v2_scalars: state.v2_scalars.clone(),
+            s1: state.s1.clone(),
+            s2: state.s2.clone(),
+            num_rounds: state.num_rounds,
+            setup: state.setup.clone(),
+            r_c: state.r_c,
+            r_d1: state.r_d1,
+            r_d2: state.r_d2,
+            r_e1: state.r_e1,
+            r_e2: state.r_e2,
+            round_d1: state.round_d1,
+            round_d2: state.round_d2,
+            round_c: state.round_c,
+            round_e1: state.round_e1,
+            round_e2: state.round_e2,
+            _mode: PhantomData,
+        }
+    }
+
+    /// Fork this state for a given challenge value
+    ///
+    /// Returns a new state with the challenge applied.
+    /// This enables building the cascading tree.
+    #[allow(clippy::type_complexity)]
+    pub fn fork<M1, M2>(&self, challenge: (Scalar<E>, Scalar<E>)) -> (Self, FirstReduceMessage<E::G1, E::G2, E::GT>, SecondReduceMessage<E::G1, E::G2, E::GT>)
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        let mut new_state = self.clone();
+        let n = 1 << new_state.num_rounds;
+        let n2 = n / 2;
+
+        // Split vectors
+        let (v1_l, v1_r) = new_state.v1.split_at_mut(n2);
+        let (v2_l, v2_r) = new_state.v2.split_at_mut(n2);
+        let (s1_l, s1_r) = new_state.s1.split_at_mut(n2);
+        let (s2_l, s2_r) = new_state.s2.split_at_mut(n2);
+
+        let g1_prime = &new_state.setup.g1_vec[..n2];
+        let g2_prime = &new_state.setup.g2_vec[..n2];
+        let g1_full = &new_state.setup.g1_vec[..n];
+        let g2_full = &new_state.setup.g2_vec[..n];
+        let ht = &new_state.setup.ht;
+        let h1 = &new_state.setup.h1;
+        let h2 = &new_state.setup.h2;
+
+        let (beta, alpha) = challenge;
+
+        // Sample round blinds
+        let blind0 = M::sample();
+        let blind1 = M::sample();
+
+        // First message
+        let (d1_left_base, d1_right_base) = if let Some(scalars) = new_state.v2_scalars.as_ref() {
+            let (s_l, s_r) = scalars.split_at(n2);
+            let (sum_left, sum_right) = (
+                M1::msm(g1_prime, s_l),
+                M1::msm(g1_prime, s_r),
+            );
+            let g2_fin = &new_state.setup.g2_vec[0];
+            (E::pair(&sum_left, g2_fin), E::pair(&sum_right, g2_fin))
+        } else {
+            (
+                E::multi_pair_g1_setup(g1_prime, v2_l),
+                E::multi_pair_g1_setup(g1_prime, v2_r),
+            )
+        };
+
+        let d1_left = M::mask(d1_left_base, ht, &blind0);
+        let d1_right = M::mask(d1_right_base, ht, &blind1);
+        let d2_left = E::multi_pair_g2_setup(v1_l, g2_prime);
+        let d2_right = E::multi_pair_g2_setup(v1_r, g2_prime);
+        let e1_beta = M1::msm(g1_full, s2_r);
+        let e2_beta = M2::msm(g2_full, s1_r);
+
+        let first_msg = FirstReduceMessage {
+            d1_left,
+            d1_right,
+            d2_left: M::mask(d2_left, ht, &blind0),
+            d2_right: M::mask(d2_right, ht, &blind1),
+            e1_beta,
+            e2_beta,
+        };
+
+        // Apply beta challenge
+        let beta_inv = beta.inv().expect("beta must be invertible");
+        M1::fixed_scalar_mul_bases_then_add(g1_full, v1_r, &beta);
+        M2::fixed_scalar_mul_bases_then_add(g2_full, v2_r, &beta_inv);
+        new_state.v2_scalars = None;
+        new_state.r_c = new_state.r_c + new_state.r_d2 * beta + new_state.r_d1 * beta_inv;
+
+        // Second message
+        let c_plus = E::multi_pair(v1_l, v2_r);
+        let c_minus = E::multi_pair(v1_r, v2_l);
+        let e1_plus = M1::msm(v1_l, s2_r);
+        let e1_minus = M1::msm(v1_r, s2_l);
+        let e2_plus = M2::msm(v2_r, s1_l);
+        let e2_minus = M2::msm(v2_l, s1_r);
+
+        let second_msg = SecondReduceMessage {
+            c_plus: M::mask(c_plus, ht, &M::sample()),
+            c_minus: M::mask(c_minus, ht, &M::sample()),
+            e1_plus: M::mask(e1_plus, h1, &M::sample()),
+            e1_minus: M::mask(e1_minus, h1, &M::sample()),
+            e2_plus: M::mask(e2_plus, h2, &M::sample()),
+            e2_minus: M::mask(e2_minus, h2, &M::sample()),
+        };
+
+        // Apply alpha challenge
+        let alpha_inv = alpha.inv().expect("alpha must be invertible");
+        let (v1_l2, v1_r2) = new_state.v1.split_at_mut(n2);
+        let (v2_l2, v2_r2) = new_state.v2.split_at_mut(n2);
+        let (s1_l2, s1_r2) = new_state.s1.split_at_mut(n2);
+        let (s2_l2, s2_r2) = new_state.s2.split_at_mut(n2);
+
+        M1::fixed_scalar_mul_vs_then_add(v1_l2, v1_r2, &alpha);
+        M2::fixed_scalar_mul_vs_then_add(v2_l2, v2_r2, &alpha_inv);
+        M1::fold_field_vectors(s1_l2, s1_r2, &alpha);
+        M1::fold_field_vectors(s2_l2, s2_r2, &alpha_inv);
+
+        new_state.v1.truncate(n2);
+        new_state.v2.truncate(n2);
+        new_state.s1.truncate(n2);
+        new_state.s2.truncate(n2);
+        new_state.num_rounds -= 1;
+
+        new_state.r_c = new_state.r_c + new_state.round_c[0] * alpha + new_state.round_c[1] * alpha_inv;
+        new_state.r_d1 = new_state.round_d1[0] * alpha + new_state.round_d1[1];
+        new_state.r_d2 = new_state.round_d2[0] * alpha_inv + new_state.round_d2[1];
+        new_state.r_e1 = new_state.r_e1 + new_state.round_e1[0] * alpha + new_state.round_e1[1] * alpha_inv;
+        new_state.r_e2 = new_state.r_e2 + new_state.round_e2[0] * alpha + new_state.round_e2[1] * alpha_inv;
+
+        (new_state, first_msg, second_msg)
+    }
+}
+
+// Manual Clone implementation since Mode may not implement Clone
+impl<E: PairingCurve, M: Mode> Clone for ForkableDoryProverState<E, M> {
+    fn clone(&self) -> Self {
+        Self {
+            v1: self.v1.clone(),
+            v2: self.v2.clone(),
+            v2_scalars: self.v2_scalars.clone(),
+            s1: self.s1.clone(),
+            s2: self.s2.clone(),
+            num_rounds: self.num_rounds,
+            setup: self.setup.clone(),
+            r_c: self.r_c,
+            r_d1: self.r_d1,
+            r_d2: self.r_d2,
+            r_e1: self.r_e1,
+            r_e2: self.r_e2,
+            round_d1: self.round_d1,
+            round_d2: self.round_d2,
+            round_c: self.round_c,
+            round_e1: self.round_e1,
+            round_e2: self.round_e2,
+            _mode: PhantomData,
+        }
+    }
+}
+
 /// Verifier state for the Dory opening protocol
 ///
 /// Maintains the current accumulated values during verification.

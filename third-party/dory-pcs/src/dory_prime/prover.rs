@@ -9,16 +9,15 @@
 //! can be combined - this module provides the single-proof interface that
 //! will be used by the batching layer.
 
+use crate::error::DoryError;
 use crate::primitives::arithmetic::{DoryRoutines, Field, Group, PairingCurve};
 use crate::primitives::poly::MultilinearLagrange;
 use crate::primitives::transcript::Transcript;
 use crate::setup::ProverSetup;
-use crate::error::DoryError;
-use crate::evaluation_proof::create_evaluation_proof;
 use crate::mode::Transparent;
 
-use super::proof::DoryPrimeProof;
 use super::cascading_tree::CascadingTree;
+use super::proof::DoryPrimeProof;
 
 /// Generate a Dory-Prime proof
 ///
@@ -26,6 +25,11 @@ use super::cascading_tree::CascadingTree;
 /// In a full Dory-Prime implementation, this would use the cascading tree
 /// to precompute challenges in parallel, but currently delegates to the
 /// standard Dory implementation.
+///
+/// The Dory-Prime optimization requires:
+/// 1. ForkableDoryProverState with proper transcript forking
+/// 2. Parallel computation of all 2^sigma paths
+/// 3. Batch polynomial construction from challenge products
 ///
 /// # Parameters
 /// - `polynomial`: The multilinear polynomial to prove
@@ -57,16 +61,20 @@ where
     P: MultilinearLagrange<F>,
     T: Transcript<Curve = E>,
 {
-    // Build the cascading tree structure for parallel challenge precomputation
-    // In the full implementation, this would actually precompute all paths
     let num_rounds = nu.max(sigma);
-    let _tree = CascadingTree::<E>::build_for_rounds(num_rounds);
+
+    // Build the cascading tree structure for parallel challenge precomputation
+    // This creates the tree structure but doesn't yet compute actual challenges
+    let tree = CascadingTree::<E>::build_for_rounds(num_rounds);
 
     // Delegate to the standard Dory proof generation
-    // In a full Dory-Prime implementation, we would use the cascading tree
-    // to precompute all challenges in parallel and then compute the batch proof
+    // In a full Dory-Prime implementation, we would:
+    // 1. Create a ForkableDoryProverState from the polynomial
+    // 2. Build the full tree by forking transcript at each challenge
+    // 3. Compute the batch polynomial from all leaf paths
+    // 4. Prove the batch polynomial with a single opening
 
-    let (proof, _blinding) = create_evaluation_proof::<F, E, M1, M2, T, P, Transparent>(
+    let (proof, _blinding) = crate::evaluation_proof::create_evaluation_proof::<F, E, M1, M2, T, P, Transparent>(
         polynomial,
         point,
         None, // No precomputed row commitments
