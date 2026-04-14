@@ -26,4 +26,11 @@ pub trait Transcript {
     ) -> <<Self::Curve as PairingCurve>::G1 as Group>::Scalar;
 
     fn reset(&mut self, domain_label: &[u8]);
+
+    /// Fork the transcript to enable parallel tree building
+    ///
+    /// Creates a copy of the current transcript state that can be used
+    /// to explore a different branch of the challenge tree. This enables
+    /// Dory-Prime's parallel proof generation by forking at each challenge point.
+    fn fork(&self) -> Self;
 }

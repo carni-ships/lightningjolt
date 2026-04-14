@@ -110,6 +110,10 @@ impl Transcript for Blake2bTranscript<crate::backends::arkworks::BN254> {
     fn reset(&mut self, domain_label: &[u8]) {
         self.reset_impl(domain_label);
     }
+
+    fn fork(&self) -> Self {
+        self.clone()
+    }
 }
 
 #[cfg(test)]

@@ -76,9 +76,15 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
 
     /// Homomorphically combines multiple opening proof hints into a single hint, computed as a
     /// linear combination with the given coefficients.
+    ///
+    /// # Arguments
+    /// * `hints` - The hints to combine
+    /// * `coeffs` - Coefficients for the linear combination
+    /// * `num_rows` - Number of rows for the Dory matrix (used by Dory implementation)
     fn combine_hints(
         _hints: Vec<Self::OpeningProofHint>,
         _coeffs: &[Self::Field],
+        _num_rows: usize,
     ) -> Self::OpeningProofHint {
         unimplemented!()
     }
@@ -92,6 +98,8 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
     /// * `hint` - An optional hint that helps optimize the proof generation.
     ///   When `None`, implementations should compute the hint internally if needed.
     /// * `transcript` - The transcript for Fiat-Shamir transformation
+    /// * `sigma` - Log of number of columns (num_columns = 2^sigma)
+    /// * `nu` - Log of number of rows (max_num_rows = 2^nu)
     ///
     /// # Returns
     /// A tuple containing:
@@ -103,6 +111,8 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         opening_point: &[<Self::Field as JoltField>::Challenge],
         hint: Option<Self::OpeningProofHint>,
         transcript: &mut ProofTranscript,
+        sigma: usize,
+        nu: usize,
     ) -> (Self::Proof, Option<Self::Field>);
 
     /// Verifies a proof of polynomial evaluation at a specific point.
@@ -152,20 +162,47 @@ pub trait StreamingCommitmentScheme: CommitmentScheme {
     type ChunkState: Send + Sync + Clone + PartialEq + Debug;
 
     /// Compute tier 1 commitment for a chunk of small scalar values
-    fn process_chunk<T: SmallScalar>(setup: &Self::ProverSetup, chunk: &[T]) -> Self::ChunkState;
+    ///
+    /// # Arguments
+    /// * `setup` - The prover setup
+    /// * `chunk` - The chunk of small scalar values
+    /// * `sigma` - Log of number of columns (num_columns = 2^sigma)
+    fn process_chunk<T: SmallScalar>(
+        setup: &Self::ProverSetup,
+        chunk: &[T],
+        sigma: usize,
+    ) -> Self::ChunkState;
 
     /// Compute tier 1 commitment for a chunk of one-hot values
+    ///
+    /// # Arguments
+    /// * `setup` - The prover setup
+    /// * `onehot_k` - The K dimension for one-hot encoding
+    /// * `chunk` - The chunk of one-hot values
+    /// * `sigma` - Log of number of columns (num_columns = 2^sigma)
     fn process_chunk_onehot(
         setup: &Self::ProverSetup,
         onehot_k: usize,
         chunk: &[Option<usize>],
+        sigma: usize,
     ) -> Self::ChunkState;
 
     /// Compute tier 2 commitment from accumulated tier 1 commitments
+    ///
+    /// # Arguments
+    /// * `setup` - The prover setup
+    /// * `onehot_k` - The K dimension for one-hot encoding (None for dense)
+    /// * `tier1_commitments` - Tier 1 commitments to aggregate
+    /// * `sigma` - Log of number of columns (num_columns = 2^sigma)
+    /// * `nu` - Log of number of rows (max_num_rows = 2^nu)
+    /// * `T` - Trace length
     fn aggregate_chunks(
         setup: &Self::ProverSetup,
         onehot_k: Option<usize>,
         tier1_commitments: &[Self::ChunkState],
+        sigma: usize,
+        nu: usize,
+        T: usize,
     ) -> (Self::Commitment, Self::OpeningProofHint);
 
     /// Batch compute tier2 commitments for multiple polynomials.
@@ -175,12 +212,16 @@ pub trait StreamingCommitmentScheme: CommitmentScheme {
         setup: &Self::ProverSetup,
         tier1_per_poly: Vec<Vec<Self::ChunkState>>,
         onehot_ks: &[Option<usize>],
+        sigma: usize,
+        nu: usize,
+        T: usize,
     ) -> Vec<(Self::Commitment, Self::OpeningProofHint)> {
         use rayon::prelude::*;
-        tier1_per_poly
+        let tier1_refs: Vec<&[Self::ChunkState]> = tier1_per_poly.iter().map(|v| v.as_slice()).collect();
+        tier1_refs
             .into_par_iter()
             .zip(onehot_ks.par_iter())
-            .map(|(tier1, k)| Self::aggregate_chunks(setup, *k, &tier1))
+            .map(|(tier1, k)| Self::aggregate_chunks(setup, *k, tier1, sigma, nu, T))
             .collect()
     }
 }

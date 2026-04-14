@@ -883,9 +883,7 @@ impl MacroBuilder {
                 }
                 // Never return - loop forever for clean termination
                 // The emulator detects termination via PC stall (prev_pc == pc)
-                loop {
-                    unsafe { core::arch::asm!("j .", options(noreturn)); }
-                }
+                loop {}
             }
 
             #panic_fn
@@ -944,10 +942,16 @@ impl MacroBuilder {
                 JoltDevice,
                 AdviceTape,
             };
+            #[cfg(not(feature = "guest"))]
             use jolt::{
                 JoltVerifierPreprocessing,
-                JoltSharedPreprocessing
+                JoltSharedPreprocessing,
+                BlindfoldSetup,
             };
+            #[cfg(feature = "guest")]
+            use jolt::postcard;
+            #[cfg(feature = "guest")]
+            use core::option::Option;
         }
     }
 

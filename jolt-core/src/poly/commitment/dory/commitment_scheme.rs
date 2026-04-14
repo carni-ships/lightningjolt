@@ -172,8 +172,11 @@ impl CommitmentScheme for DoryCommitmentScheme {
     {
         let _span = trace_span!("DoryCommitmentScheme::batch_commit").entered();
 
+        // Use sequential iteration instead of par_iter() because commit() reads from
+        // thread-local DoryGlobals which aren't accessible on rayon worker threads.
+        // TODO: Thread sigma/nu through call chain to enable true parallelization
         polys
-            .par_iter()
+            .iter()
             .map(|poly| Self::commit(poly.borrow(), gens))
             .collect()
     }
@@ -184,6 +187,8 @@ impl CommitmentScheme for DoryCommitmentScheme {
         opening_point: &[<ark_bn254::Fr as JoltField>::Challenge],
         hint: Option<Self::OpeningProofHint>,
         transcript: &mut ProofTranscript,
+        sigma: usize,
+        nu: usize,
     ) -> (Self::Proof, Option<Self::Field>) {
         let _span = trace_span!("DoryCommitmentScheme::prove").entered();
 
@@ -194,11 +199,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
                 (row_commitments.into_rows(), DoryField::zero())
             });
 
-        let num_cols = DoryGlobals::get_num_columns();
-        let num_rows = DoryGlobals::get_max_num_rows();
-        let sigma = num_cols.log_2();
-        let nu = num_rows.log_2();
-
+        // sigma and nu are now passed as parameters instead of read from globals
         let reordered_point = reorder_opening_point_for_layout::<ark_bn254::Fr>(opening_point);
         let ark_point: Vec<ArkFr> = reordered_point
             .iter()
@@ -284,8 +285,9 @@ impl CommitmentScheme for DoryCommitmentScheme {
     fn combine_hints(
         hints: Vec<Self::OpeningProofHint>,
         coeffs: &[Self::Field],
+        num_rows: usize,
     ) -> Self::OpeningProofHint {
-        let num_rows = DoryGlobals::get_max_num_rows();
+        // num_rows is now passed as a parameter instead of read from globals
 
         let mut owned_hints: Vec<Vec<ArkG1>> = hints.into_iter().map(|h| h.0).collect();
         for h in &mut owned_hints {
@@ -373,10 +375,14 @@ impl CommitmentScheme for DoryCommitmentScheme {
 impl StreamingCommitmentScheme for DoryCommitmentScheme {
     type ChunkState = Vec<ArkG1>; // Tier 1 commitment chunks
 
-    fn process_chunk<T: SmallScalar>(setup: &Self::ProverSetup, chunk: &[T]) -> Self::ChunkState {
-        debug_assert_eq!(chunk.len(), DoryGlobals::get_num_columns());
+    fn process_chunk<T: SmallScalar>(
+        setup: &Self::ProverSetup,
+        chunk: &[T],
+        sigma: usize,
+    ) -> Self::ChunkState {
+        let row_len = 1 << sigma;
+        debug_assert_eq!(chunk.len(), row_len);
 
-        let row_len = DoryGlobals::get_num_columns();
         let g1_bases = get_cached_g1_affine_bases(setup, row_len);
 
         let row_commitment =
@@ -388,10 +394,11 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
         setup: &Self::ProverSetup,
         onehot_k: usize,
         chunk: &[Option<usize>],
+        sigma: usize,
     ) -> Self::ChunkState {
         let K = onehot_k;
 
-        let row_len = DoryGlobals::get_num_columns();
+        let row_len = 1 << sigma;
         let g1_bases = get_cached_g1_affine_bases(setup, row_len);
 
         let mut indices_per_k: Vec<Vec<usize>> = vec![Vec::new(); K];
@@ -417,13 +424,15 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
         setup: &Self::ProverSetup,
         onehot_k: Option<usize>,
         chunks: &[Self::ChunkState],
+        sigma: usize,
+        nu: usize,
+        _T: usize,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
-        let num_rows = DoryGlobals::get_max_num_rows();
+        let num_rows = 1 << nu;
+        let row_len = 1 << sigma;
 
         if let Some(_K) = onehot_k {
-            let row_len = DoryGlobals::get_num_columns();
-            let T = DoryGlobals::get_T();
-            let rows_per_k = T / row_len;
+            let rows_per_k = _T / row_len;
 
             let mut row_commitments = vec![ArkG1(G1Projective::zero()); num_rows];
             for (chunk_index, commitments) in chunks.iter().enumerate() {
@@ -453,10 +462,24 @@ impl StreamingCommitmentScheme for DoryCommitmentScheme {
         }
     }
 
-    // GPU batch_aggregate_chunks removed: the per-independent-pair Miller loop kernel
-    // is algorithmically worse than CPU's accumulated multi-Miller loop with cached
-    // G2Prepared EllCoeffs. GPU paths in ark_pairing.rs still activate for large
-    // batches (>=4096 pairs) via the threshold gate.
+    /// Batch compute tier2 commitments for multiple polynomials.
+    /// Passes sigma/nu/T through to enable parallel execution with proper parameters.
+    fn batch_aggregate_chunks(
+        setup: &Self::ProverSetup,
+        tier1_per_poly: Vec<Vec<Self::ChunkState>>,
+        onehot_ks: &[Option<usize>],
+        sigma: usize,
+        nu: usize,
+        T: usize,
+    ) -> Vec<(Self::Commitment, Self::OpeningProofHint)> {
+        use rayon::prelude::*;
+        let tier1_refs: Vec<&[Self::ChunkState]> = tier1_per_poly.iter().map(|v| v.as_slice()).collect();
+        tier1_refs
+            .into_par_iter()
+            .zip(onehot_ks.par_iter())
+            .map(|(tier1, k)| Self::aggregate_chunks(setup, *k, tier1, sigma, nu, T))
+            .collect()
+    }
 }
 
 impl<C: JoltCurve> ZkEvalCommitment<C> for DoryCommitmentScheme

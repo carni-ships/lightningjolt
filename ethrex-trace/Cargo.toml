@@ -1,0 +1,36 @@
+[package]
+name = "ethrex-trace"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Ethrex VM for EVM execution
+ethrex-vm = { path = "../../ethrex/crates/vm" }
+ethrex-levm = { path = "../../ethrex/crates/vm/levm" }
+ethrex-common = { path = "../../ethrex/crates/common" }
+ethrex-crypto = { path = "../../ethrex/crates/common/crypto", features = ["std"] }
+
+# Jolt for proving
+jolt-evm-guest = { path = "../jolt-evm/guest", features = ["host-side"] }
+
+# Crypto
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+
+# Serialization
+postcard = { workspace = true, features = ["alloc"] }
+
+# Utilities
+hex.workspace = true
+rayon.workspace = true
+
+# Serialization for RPC
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+once_cell = "1.19"
+
+# HTTP client for RPC
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+
+[dev-dependencies]
+# For testing - minimal dependencies
+ethrex-storage = { path = "../../ethrex/crates/storage" }

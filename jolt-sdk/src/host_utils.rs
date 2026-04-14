@@ -5,6 +5,7 @@ pub use jolt_core::zkvm::proof_serialization::serialize_and_print_size;
 #[cfg(feature = "host")]
 pub use jolt_core::zkvm::{prover::JoltProverPreprocessing, RV64IMACProver};
 
+#[cfg(feature = "host")]
 pub use common::jolt_device::{JoltDevice, MemoryConfig, MemoryLayout};
 pub use jolt_core::ark_bn254::Fr as F;
 pub use jolt_core::curve::Bn254Curve as Curve;
@@ -24,4 +25,5 @@ pub use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
 pub use jolt_core::poly::commitment::dory::{DoryContext, DoryGlobals};
 pub use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial;
 pub use jolt_core::zkvm::ram::populate_memory_states;
+// BlindfoldSetup needed by provable macro even in guest mode
 pub use jolt_core::zkvm::verifier::BlindfoldSetup;

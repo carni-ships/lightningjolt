@@ -302,6 +302,7 @@ impl<F: JoltField> DoryOpeningState<F> {
         rlc_streaming_data: Arc<RLCStreamingData>,
         mut opening_hints: HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
         advice_polys: HashMap<CommittedPolynomial, MultilinearPolynomial<F>>,
+        num_rows: usize,
     ) -> (MultilinearPolynomial<F>, PCS::OpeningProofHint) {
         // Accumulate gamma coefficients per polynomial
         let mut rlc_map = BTreeMap::new();
@@ -326,7 +327,7 @@ impl<F: JoltField> DoryOpeningState<F> {
             .map(|k| opening_hints.remove(&k).unwrap())
             .collect();
 
-        let hint = PCS::combine_hints(hints, &coeffs);
+        let hint = PCS::combine_hints(hints, &coeffs, num_rows);
 
         (joint_poly, hint)
     }

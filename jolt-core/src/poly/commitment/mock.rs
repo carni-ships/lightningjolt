@@ -73,6 +73,7 @@ where
     fn combine_hints(
         _hints: Vec<Self::OpeningProofHint>,
         _coeffs: &[Self::Field],
+        _num_rows: usize,
     ) -> Self::OpeningProofHint {
     }
 
@@ -82,6 +83,8 @@ where
         opening_point: &[<Self::Field as JoltField>::Challenge],
         _hint: Option<Self::OpeningProofHint>,
         _transcript: &mut ProofTranscript,
+        _sigma: usize,
+        _nu: usize,
     ) -> (Self::Proof, Option<Self::Field>) {
         (
             MockProof {
@@ -114,13 +117,18 @@ where
 {
     type ChunkState = ();
 
-    fn process_chunk<T: SmallScalar>(_setup: &Self::ProverSetup, _chunk: &[T]) -> Self::ChunkState {
+    fn process_chunk<T: SmallScalar>(
+        _setup: &Self::ProverSetup,
+        _chunk: &[T],
+        _sigma: usize,
+    ) -> Self::ChunkState {
     }
 
     fn process_chunk_onehot(
         _setup: &Self::ProverSetup,
         _onehot_k: usize,
         _chunk: &[Option<usize>],
+        _sigma: usize,
     ) -> Self::ChunkState {
     }
 
@@ -128,6 +136,9 @@ where
         _setup: &Self::ProverSetup,
         _onehot_k: Option<usize>,
         _tier1_commitments: &[Self::ChunkState],
+        _sigma: usize,
+        _nu: usize,
+        _T: usize,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         (MockCommitment::default(), ())
     }

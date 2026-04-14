@@ -79,6 +79,7 @@ parallel = [
     "ark-ff?/parallel",
 ]
 zk = []
+dory-prime = ["arkworks"]
 
 [lib]
 name = "dory_pcs"

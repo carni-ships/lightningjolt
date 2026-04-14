@@ -20,10 +20,10 @@ pub const FUNCT3_ADVICE_LD: u32 = 0b110; // Load doubleword from advice tape
 #[doc(hidden)]
 pub const FUNCT3_ADVICE_LEN: u32 = 0b111; // Get number of remaining bytes in advice tape
 
-#[cfg(any(feature = "host", feature = "guest-verifier"))]
+#[cfg(any(feature = "host", feature = "guest-verifier", feature = "guest"))]
 pub mod host_utils;
 
-#[cfg(any(feature = "host", feature = "guest-verifier"))]
+#[cfg(any(feature = "host", feature = "guest-verifier", feature = "guest"))]
 pub use host_utils::*;
 
 pub use jolt_platform::*;

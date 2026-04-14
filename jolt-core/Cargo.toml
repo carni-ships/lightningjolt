@@ -40,6 +40,7 @@ prover = [
     "dory/cache", # This includes `parallel` feature
     "dory/disk-persistence",
 ]
+dory-prime = ["dory/dory-prime"]
 # For cross-compilation to zkVM targets (SP1) that provide their own platform runtime.
 # Enables tracer/std for compilation but skips jolt-platform's getrandom/sys_rand symbols.
 sp1-guest = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "rayon", "tracer/std"]

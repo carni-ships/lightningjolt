@@ -1,12 +1,12 @@
-//! Global state management for Dory parameters
+//! Thread-local state management for Dory parameters
+//!
+//! Uses thread-local storage to enable safe parallel proof generation.
+//! Each thread has its own Dory context, preventing races between concurrent proofs.
 
 use crate::utils::math::Math;
 use allocative::Allocative;
 use dory::backends::arkworks::{init_cache, ArkG1, ArkG2};
-use std::sync::{
-    atomic::{AtomicU8, Ordering},
-    RwLock,
-};
+use std::cell::RefCell;
 #[cfg(test)]
 use std::{
     sync::OnceLock,
@@ -141,30 +141,56 @@ impl From<DoryLayout> for u8 {
     }
 }
 
-// Main polynomial globals
-static GLOBAL_T: RwLock<Option<usize>> = RwLock::new(None);
-static MAX_NUM_ROWS: RwLock<Option<usize>> = RwLock::new(None);
-static NUM_COLUMNS: RwLock<Option<usize>> = RwLock::new(None);
+/// Thread-local state for Dory parameters.
+/// Each thread has its own copy, enabling safe parallel proof generation.
+thread_local! {
+    static THREAD_STATE: RefCell<DoryThreadState> = RefCell::new(DoryThreadState::new());
+}
 
-// Trusted advice globals
-static TRUSTED_ADVICE_T: RwLock<Option<usize>> = RwLock::new(None);
-static TRUSTED_ADVICE_MAX_NUM_ROWS: RwLock<Option<usize>> = RwLock::new(None);
-static TRUSTED_ADVICE_NUM_COLUMNS: RwLock<Option<usize>> = RwLock::new(None);
+/// Thread-local state containing all Dory globals
+struct DoryThreadState {
+    // Main context
+    global_t: Option<usize>,
+    max_num_rows: Option<usize>,
+    num_columns: Option<usize>,
 
-// Untrusted advice globals
-static UNTRUSTED_ADVICE_T: RwLock<Option<usize>> = RwLock::new(None);
-static UNTRUSTED_ADVICE_MAX_NUM_ROWS: RwLock<Option<usize>> = RwLock::new(None);
-static UNTRUSTED_ADVICE_NUM_COLUMNS: RwLock<Option<usize>> = RwLock::new(None);
+    // Trusted advice context
+    trusted_advice_t: Option<usize>,
+    trusted_advice_max_num_rows: Option<usize>,
+    trusted_advice_num_columns: Option<usize>,
 
-// Context tracking: 0=Main, 1=TrustedAdvice, 2=UntrustedAdvice
-static CURRENT_CONTEXT: AtomicU8 = AtomicU8::new(0);
+    // Untrusted advice context
+    untrusted_advice_t: Option<usize>,
+    untrusted_advice_max_num_rows: Option<usize>,
+    untrusted_advice_num_columns: Option<usize>,
 
-// Layout tracking: 0=CycleMajor, 1=AddressMajor
-static CURRENT_LAYOUT: AtomicU8 = AtomicU8::new(0);
+    // Context and layout tracking
+    current_context: DoryContext,
+    current_layout: DoryLayout,
+}
+
+impl DoryThreadState {
+    fn new() -> Self {
+        Self {
+            global_t: None,
+            max_num_rows: None,
+            num_columns: None,
+            trusted_advice_t: None,
+            trusted_advice_max_num_rows: None,
+            trusted_advice_num_columns: None,
+            untrusted_advice_t: None,
+            untrusted_advice_max_num_rows: None,
+            untrusted_advice_num_columns: None,
+            current_context: DoryContext::Main,
+            current_layout: DoryLayout::CycleMajor,
+        }
+    }
+}
 
 /// Dory commitment context - determines which set of global parameters to use
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DoryContext {
+    #[default]
     Main = 0,
     TrustedAdvice = 1,
     UntrustedAdvice = 2,
@@ -181,13 +207,17 @@ impl From<u8> for DoryContext {
     }
 }
 
+/// Guard that restores previous Dory context when dropped.
+/// Used for scoped context switching.
 pub struct DoryContextGuard {
     previous_context: DoryContext,
 }
 
 impl Drop for DoryContextGuard {
     fn drop(&mut self) {
-        CURRENT_CONTEXT.store(self.previous_context as u8, Ordering::SeqCst);
+        THREAD_STATE.with(|state| {
+            state.borrow_mut().current_context = self.previous_context;
+        });
     }
 }
 
@@ -258,13 +288,15 @@ impl DoryGlobals {
 
     /// Get the current Dory context
     pub fn current_context() -> DoryContext {
-        CURRENT_CONTEXT.load(Ordering::SeqCst).into()
+        THREAD_STATE.with(|state| state.borrow().current_context)
     }
 
     /// Set the Dory context and return a guard that restores the previous context on drop
     pub fn with_context(context: DoryContext) -> DoryContextGuard {
         let previous = Self::current_context();
-        CURRENT_CONTEXT.store(context as u8, Ordering::SeqCst);
+        THREAD_STATE.with(|state| {
+            state.borrow_mut().current_context = context;
+        });
         DoryContextGuard {
             previous_context: previous,
         }
@@ -272,7 +304,7 @@ impl DoryGlobals {
 
     /// Get the current Dory matrix layout
     pub fn get_layout() -> DoryLayout {
-        CURRENT_LAYOUT.load(Ordering::SeqCst).into()
+        THREAD_STATE.with(|state| state.borrow().current_layout)
     }
 
     /// Set the Dory matrix layout directly (test-only).
@@ -280,7 +312,9 @@ impl DoryGlobals {
     /// In production code, prefer passing the layout to `initialize_context` instead.
     #[cfg(test)]
     pub fn set_layout(layout: DoryLayout) {
-        CURRENT_LAYOUT.store(layout as u8, Ordering::SeqCst);
+        THREAD_STATE.with(|state| {
+            state.borrow_mut().current_layout = layout;
+        });
     }
 
     /// Returns the configured Dory matrix shape `(num_rows, num_cols)` for the current context.
@@ -320,96 +354,72 @@ impl DoryGlobals {
     }
 
     fn set_max_num_rows_for_context(max_num_rows: usize, context: DoryContext) {
-        match context {
-            DoryContext::Main => {
-                *MAX_NUM_ROWS.write().unwrap() = Some(max_num_rows);
+        THREAD_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            match context {
+                DoryContext::Main => state.max_num_rows = Some(max_num_rows),
+                DoryContext::TrustedAdvice => state.trusted_advice_max_num_rows = Some(max_num_rows),
+                DoryContext::UntrustedAdvice => state.untrusted_advice_max_num_rows = Some(max_num_rows),
             }
-            DoryContext::TrustedAdvice => {
-                *TRUSTED_ADVICE_MAX_NUM_ROWS.write().unwrap() = Some(max_num_rows);
-            }
-            DoryContext::UntrustedAdvice => {
-                *UNTRUSTED_ADVICE_MAX_NUM_ROWS.write().unwrap() = Some(max_num_rows);
-            }
-        }
+        });
     }
 
     pub fn get_max_num_rows() -> usize {
         let context = Self::current_context();
-        match context {
-            DoryContext::Main => MAX_NUM_ROWS
-                .read()
-                .unwrap()
-                .expect("max_num_rows not initialized"),
-            DoryContext::TrustedAdvice => TRUSTED_ADVICE_MAX_NUM_ROWS
-                .read()
-                .unwrap()
-                .expect("trusted_advice max_num_rows not initialized"),
-            DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_MAX_NUM_ROWS
-                .read()
-                .unwrap()
-                .expect("untrusted_advice max_num_rows not initialized"),
-        }
+        THREAD_STATE.with(|state| {
+            let state = state.borrow();
+            match context {
+                DoryContext::Main => state.max_num_rows.expect("max_num_rows not initialized"),
+                DoryContext::TrustedAdvice => state.trusted_advice_max_num_rows.expect("trusted_advice max_num_rows not initialized"),
+                DoryContext::UntrustedAdvice => state.untrusted_advice_max_num_rows.expect("untrusted_advice max_num_rows not initialized"),
+            }
+        })
     }
 
     fn set_num_columns_for_context(num_columns: usize, context: DoryContext) {
-        match context {
-            DoryContext::Main => {
-                *NUM_COLUMNS.write().unwrap() = Some(num_columns);
+        THREAD_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            match context {
+                DoryContext::Main => state.num_columns = Some(num_columns),
+                DoryContext::TrustedAdvice => state.trusted_advice_num_columns = Some(num_columns),
+                DoryContext::UntrustedAdvice => state.untrusted_advice_num_columns = Some(num_columns),
             }
-            DoryContext::TrustedAdvice => {
-                *TRUSTED_ADVICE_NUM_COLUMNS.write().unwrap() = Some(num_columns);
-            }
-            DoryContext::UntrustedAdvice => {
-                *UNTRUSTED_ADVICE_NUM_COLUMNS.write().unwrap() = Some(num_columns);
-            }
-        }
+        });
     }
 
     pub fn get_num_columns() -> usize {
         let context = Self::current_context();
-        match context {
-            DoryContext::Main => NUM_COLUMNS
-                .read()
-                .unwrap()
-                .expect("num_columns not initialized"),
-            DoryContext::TrustedAdvice => TRUSTED_ADVICE_NUM_COLUMNS
-                .read()
-                .unwrap()
-                .expect("trusted_advice num_columns not initialized"),
-            DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_NUM_COLUMNS
-                .read()
-                .unwrap()
-                .expect("untrusted_advice num_columns not initialized"),
-        }
+        THREAD_STATE.with(|state| {
+            let state = state.borrow();
+            match context {
+                DoryContext::Main => state.num_columns.expect("num_columns not initialized"),
+                DoryContext::TrustedAdvice => state.trusted_advice_num_columns.expect("trusted_advice num_columns not initialized"),
+                DoryContext::UntrustedAdvice => state.untrusted_advice_num_columns.expect("untrusted_advice num_columns not initialized"),
+            }
+        })
     }
 
     fn set_T_for_context(t: usize, context: DoryContext) {
-        match context {
-            DoryContext::Main => {
-                *GLOBAL_T.write().unwrap() = Some(t);
+        THREAD_STATE.with(|state| {
+            let mut state = state.borrow_mut();
+            match context {
+                DoryContext::Main => state.global_t = Some(t),
+                DoryContext::TrustedAdvice => state.trusted_advice_t = Some(t),
+                DoryContext::UntrustedAdvice => state.untrusted_advice_t = Some(t),
             }
-            DoryContext::TrustedAdvice => {
-                *TRUSTED_ADVICE_T.write().unwrap() = Some(t);
-            }
-            DoryContext::UntrustedAdvice => {
-                *UNTRUSTED_ADVICE_T.write().unwrap() = Some(t);
-            }
-        }
+        });
     }
 
     pub fn get_T() -> usize {
         let context = Self::current_context();
-        match context {
-            DoryContext::Main => GLOBAL_T.read().unwrap().expect("t not initialized"),
-            DoryContext::TrustedAdvice => TRUSTED_ADVICE_T
-                .read()
-                .unwrap()
-                .expect("trusted_advice t not initialized"),
-            DoryContext::UntrustedAdvice => UNTRUSTED_ADVICE_T
-                .read()
-                .unwrap()
-                .expect("untrusted_advice t not initialized"),
-        }
+        THREAD_STATE.with(|state| {
+            let state = state.borrow();
+            match context {
+                DoryContext::Main => state.global_t.expect("t not initialized"),
+                DoryContext::TrustedAdvice => state.trusted_advice_t.expect("trusted_advice t not initialized"),
+                DoryContext::UntrustedAdvice => state.untrusted_advice_t.expect("untrusted_advice t not initialized"),
+            }
+        })
     }
 
     /// Calculate optimal matrix dimensions for given K and T
@@ -457,41 +467,31 @@ impl DoryGlobals {
         Self::set_T_for_context(t, context);
         Self::set_max_num_rows_for_context(num_rows, context);
 
-        // For Main context, set layout (if provided) and ensure subsequent uses of `get_*` read from it
+        // For Main context, set layout and context
         if context == DoryContext::Main {
-            if let Some(l) = layout {
-                CURRENT_LAYOUT.store(l as u8, Ordering::SeqCst);
-            }
-            CURRENT_CONTEXT.store(DoryContext::Main as u8, Ordering::SeqCst);
+            THREAD_STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                if let Some(l) = layout {
+                    state.current_layout = l;
+                }
+                state.current_context = DoryContext::Main;
+            });
         }
 
         Some(())
     }
 
-    /// Reset global state
+    /// Reset thread-local state
+    ///
+    /// Note: This only resets the current thread's state.
+    /// Each thread has independent state.
     #[cfg(test)]
     pub fn reset() {
         Self::configure_test_cache_root();
 
-        // Reset main globals
-        *GLOBAL_T.write().unwrap() = None;
-        *MAX_NUM_ROWS.write().unwrap() = None;
-        *NUM_COLUMNS.write().unwrap() = None;
-
-        // Reset layout to default (CycleMajor)
-        CURRENT_LAYOUT.store(0, Ordering::SeqCst);
-
-        // Reset trusted advice globals
-        *TRUSTED_ADVICE_T.write().unwrap() = None;
-        *TRUSTED_ADVICE_MAX_NUM_ROWS.write().unwrap() = None;
-        *TRUSTED_ADVICE_NUM_COLUMNS.write().unwrap() = None;
-
-        // Reset untrusted advice globals
-        *UNTRUSTED_ADVICE_T.write().unwrap() = None;
-        *UNTRUSTED_ADVICE_MAX_NUM_ROWS.write().unwrap() = None;
-        *UNTRUSTED_ADVICE_NUM_COLUMNS.write().unwrap() = None;
-
-        CURRENT_CONTEXT.store(0, Ordering::SeqCst);
+        THREAD_STATE.with(|state| {
+            *state.borrow_mut() = DoryThreadState::default();
+        });
     }
 
     /// Initialize the prepared point cache for faster pairing operations

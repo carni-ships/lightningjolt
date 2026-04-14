@@ -1,0 +1,35 @@
+[package]
+name = "evm-minimal"
+version = "0.1.0"
+edition = "2021"
+description = "Minimal EVM implementation for Jolt zkVM"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# EVM Engine - use ethrex's levm with jolt feature for no_std crypto
+ethrex-levm = { path = "../../ethrex/crates/vm/levm", default-features = false, features = ["jolt"] }
+
+# U256 and integer types - no_std compatible
+ruint = { version = "1.12", default-features = false, features = ["primitive-types"] }
+
+# Serialization for input/output
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+postcard = { version = "1.0.8", default-features = false, features = ["alloc", "embedded-io-06"] }
+
+# Minimal hex encoding
+hex = "0.4"
+
+# For keccak hash output
+tiny-keccak = { version = "2.0", features = ["keccak"] }
+
+# k256 for ECDSA (ecrecover)
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "arithmetic"] }
+
+[features]
+default = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

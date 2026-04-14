@@ -39,17 +39,6 @@ pub fn _getrandom_v02(s: &mut [u8]) -> Result<(), getrandom_v02::Error> {
     Ok(())
 }
 
-#[allow(clippy::missing_safety_doc)]
-#[unsafe(no_mangle)]
-unsafe extern "Rust" fn __getrandom_v03_custom(
-    dest: *mut u8,
-    len: usize,
-) -> Result<(), getrandom_v03::Error> {
-    sys_rand(dest, len);
-
-    Ok(())
-}
-
 // Register the custom getrandom implementation for getrandom v0.2 on non-wasm targets
 // For wasm targets we use the "js" feature which uses the browser's crypto API
 #[cfg(not(any(target_arch = "wasm32")))]

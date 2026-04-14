@@ -519,6 +519,8 @@ where
         opening_point: &[<Self::Field as JoltField>::Challenge], // point at which the polynomial is evaluated
         _hint: Option<Self::OpeningProofHint>,
         transcript: &mut ProofTranscript,
+        _sigma: usize,
+        _nu: usize,
     ) -> (Self::Proof, Option<Self::Field>) {
         let eval = poly.evaluate(opening_point);
         let proof = HyperKZG::<P>::open(setup, poly, opening_point, &eval, transcript).unwrap();
@@ -547,13 +549,18 @@ where
 {
     type ChunkState = ();
 
-    fn process_chunk<T: SmallScalar>(_setup: &Self::ProverSetup, _chunk: &[T]) -> Self::ChunkState {
+    fn process_chunk<T: SmallScalar>(
+        _setup: &Self::ProverSetup,
+        _chunk: &[T],
+        _sigma: usize,
+    ) -> Self::ChunkState {
     }
 
     fn process_chunk_onehot(
         _setup: &Self::ProverSetup,
         _onehot_k: usize,
         _chunk: &[Option<usize>],
+        _sigma: usize,
     ) -> Self::ChunkState {
     }
 
@@ -561,6 +568,9 @@ where
         _setup: &Self::ProverSetup,
         _onehot_k: Option<usize>,
         _tier1_commitments: &[Self::ChunkState],
+        _sigma: usize,
+        _nu: usize,
+        _T: usize,
     ) -> (Self::Commitment, Self::OpeningProofHint) {
         unimplemented!("HyperKZG does not support streaming commitment")
     }

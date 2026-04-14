@@ -670,6 +670,10 @@ impl<
 
         let polys = all_committed_polynomials(&self.one_hot_params);
         let T = DoryGlobals::get_T();
+        let num_cols = DoryGlobals::get_num_columns();
+        let num_rows = DoryGlobals::get_max_num_rows();
+        let sigma = num_cols.log_2();
+        let nu = num_rows.log_2();
 
         // For AddressMajor, use non-streaming commit path since streaming assumes CycleMajor layout
         let (commitments, hint_map) = if DoryGlobals::get_layout() == DoryLayout::AddressMajor {
@@ -686,8 +690,10 @@ impl<
                 .collect();
 
             // Generate witnesses and commit using the regular (non-streaming) path
+            // Changed from par_iter() to iter() because worker threads don't have DoryGlobals
+            // initialized in thread-local storage.
             let (commitments, hints): (Vec<_>, Vec<_>) = polys
-                .par_iter()
+                .iter()
                 .map(|poly_id| {
                     let witness: MultilinearPolynomial<F> = poly_id.generate_witness(
                         &self.preprocessing.shared.bytecode,
@@ -703,21 +709,24 @@ impl<
             (commitments, hint_map)
         } else {
             // CycleMajor: use streaming
-            let row_len = DoryGlobals::get_num_columns();
-            let num_rows = T / DoryGlobals::get_max_num_rows();
+            let row_len = 1 << sigma;
+            let num_rows = T / (1 << nu);
 
             tracing::debug!(
-                "Generating and committing {} witness polynomials with T={}, row_len={}, num_rows={}",
+                "Generating and committing {} witness polynomials with T={}, row_len={}, num_rows={}, sigma={}, nu={}",
                 polys.len(),
                 T,
                 row_len,
-                num_rows
+                num_rows,
+                sigma,
+                nu
             );
 
             // Tier 1: Compute row commitments for each polynomial
             // Use the already-materialized padded trace with par_chunks for better
             // parallel scheduling (vs par_bridge over lazy_trace which re-executes
             // the emulator and serializes chunk production).
+            // sigma is now passed as a parameter, so worker threads don't need DoryGlobals.
             let num_chunks = T / row_len;
             let mut row_commitments: Vec<Vec<PCS::ChunkState>> = vec![vec![]; num_chunks];
 
@@ -733,6 +742,7 @@ impl<
                                 &self.preprocessing.shared,
                                 chunk,
                                 &self.one_hot_params,
+                                sigma,
                             )
                         })
                         .collect();
@@ -759,6 +769,9 @@ impl<
                 &self.preprocessing.generators,
                 tier1_per_poly,
                 &onehot_ks,
+                sigma,
+                nu,
+                T,
             )
             .into_iter()
             .unzip();
@@ -1911,6 +1924,12 @@ impl<
             Some(DoryGlobals::get_layout()),
         );
 
+        // Compute sigma and nu from the initialized globals
+        let num_cols = DoryGlobals::get_num_columns();
+        let num_rows = DoryGlobals::get_max_num_rows();
+        let sigma = num_cols.log_2();
+        let nu = num_rows.log_2();
+
         // Get the unified opening point from HammingWeightClaimReduction
         // This contains (r_address_stage7 || r_cycle_stage6) in big-endian
         let (opening_point, _) = self.opening_accumulator.get_committed_polynomial_opening(
@@ -2061,12 +2080,14 @@ impl<
 
         // Build streaming RLC polynomial directly (no witness poly regeneration!)
         // Use materialized trace (default, single pass) instead of lazy trace
+        let num_rows = 1 << nu;
         let (joint_poly, hint) = state.build_streaming_rlc::<PCS>(
             self.one_hot_params.clone(),
             TraceSource::Materialized(Arc::clone(&self.trace)),
             streaming_data,
             opening_proof_hints,
             advice_polys,
+            num_rows,
         );
 
         let (proof, _y_blinding) = PCS::prove(
@@ -2075,6 +2096,8 @@ impl<
             &opening_point.r,
             Some(hint),
             &mut self.transcript,
+            sigma,
+            nu,
         );
 
         #[cfg(feature = "zk")]

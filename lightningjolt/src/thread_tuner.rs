@@ -149,11 +149,12 @@ fn prove_with_threads(tier: &BenchTier, num_threads: usize) -> f64 {
     pool.install(|| {
         let target_dir = "/tmp/jolt-lightningjolt-targets";
         let mut program = guest::compile_prove_block(target_dir);
-        let shared = guest::preprocess_shared_prove_block(&mut program);
+        let shared = guest::preprocess_shared_prove_block(&mut program).unwrap();
         let prover_pp = guest::preprocess_prover_prove_block(shared.clone());
         let verifier_pp = guest::preprocess_verifier_prove_block(
             shared,
             prover_pp.generators.to_verifier_setup(),
+            None,
         );
         let prove_fn = guest::build_prover_prove_block(program, prover_pp);
         let verify_fn = guest::build_verifier_prove_block(verifier_pp);

@@ -1,0 +1,12 @@
+[package]
+name = "jolt-evm"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+guest = []
+
+[dependencies]
+# Crypto for EVM - pure Rust implementations
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }

@@ -46,6 +46,21 @@ guest-verifier = [
     "jolt-core/minimal",
 ]
 
+# Guest mode - enables no_std guest builds
+guest = [
+    "dep:zeroos",
+    "zeroos-nostd",
+    "jolt-platform/random",
+    "jolt-core/minimal",
+]
+
+# Guest mode without jolt-core - for zkVM guests that don't need Jolt's proving system
+guest-no-jolt-core = [
+    "dep:zeroos",
+    "zeroos-nostd",
+    "jolt-platform/random",
+]
+
 malloc-shim = ["jolt-platform/malloc-shim"]
 
 # Jolt-SDK native features (optional capabilities)

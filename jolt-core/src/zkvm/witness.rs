@@ -60,12 +60,20 @@ pub fn all_committed_polynomials(one_hot_params: &OneHotParams) -> Vec<Committed
 
 impl CommittedPolynomial {
     /// Generate witness data and compute tier 1 commitment for a single row
+    ///
+    /// # Arguments
+    /// * `setup` - The prover setup
+    /// * `preprocessing` - Jolt shared preprocessing
+    /// * `row_cycles` - The trace cycles for this row
+    /// * `one_hot_params` - One-hot encoding parameters
+    /// * `sigma` - Log of number of columns (num_columns = 2^sigma)
     pub fn stream_witness_and_commit_rows<F, PCS>(
         &self,
         setup: &PCS::ProverSetup,
         preprocessing: &JoltSharedPreprocessing,
         row_cycles: &[tracer::instruction::Cycle],
         one_hot_params: &OneHotParams,
+        sigma: usize,
     ) -> <PCS as StreamingCommitmentScheme>::ChunkState
     where
         F: JoltField,
@@ -80,7 +88,7 @@ impl CommittedPolynomial {
                         post_value as i128 - pre_value as i128
                     })
                     .collect();
-                PCS::process_chunk(setup, &row)
+                PCS::process_chunk(setup, &row, sigma)
             }
             CommittedPolynomial::RamInc => {
                 let row: Vec<i128> = row_cycles
@@ -92,7 +100,7 @@ impl CommittedPolynomial {
                         _ => 0,
                     })
                     .collect();
-                PCS::process_chunk(setup, &row)
+                PCS::process_chunk(setup, &row, sigma)
             }
             CommittedPolynomial::InstructionRa(idx) => {
                 let row: Vec<Option<usize>> = row_cycles
@@ -102,7 +110,7 @@ impl CommittedPolynomial {
                         Some(one_hot_params.lookup_index_chunk(lookup_index, *idx) as usize)
                     })
                     .collect();
-                PCS::process_chunk_onehot(setup, one_hot_params.k_chunk, &row)
+                PCS::process_chunk_onehot(setup, one_hot_params.k_chunk, &row, sigma)
             }
             CommittedPolynomial::BytecodeRa(idx) => {
                 let row: Vec<Option<usize>> = row_cycles
@@ -112,7 +120,7 @@ impl CommittedPolynomial {
                         Some(one_hot_params.bytecode_pc_chunk(pc, *idx) as usize)
                     })
                     .collect();
-                PCS::process_chunk_onehot(setup, one_hot_params.k_chunk, &row)
+                PCS::process_chunk_onehot(setup, one_hot_params.k_chunk, &row, sigma)
             }
             CommittedPolynomial::RamRa(idx) => {
                 let row: Vec<Option<usize>> = row_cycles
@@ -125,7 +133,7 @@ impl CommittedPolynomial {
                         .map(|address| one_hot_params.ram_address_chunk(address, *idx) as usize)
                     })
                     .collect();
-                PCS::process_chunk_onehot(setup, one_hot_params.k_chunk, &row)
+                PCS::process_chunk_onehot(setup, one_hot_params.k_chunk, &row, sigma)
             }
             CommittedPolynomial::TrustedAdvice | CommittedPolynomial::UntrustedAdvice => {
                 panic!("Advice polynomials should not use streaming witness generation")

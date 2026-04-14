@@ -1,0 +1,25 @@
+[package]
+name = "jolt-evm-host"
+version = "0.1.0"
+edition = "2021"
+
+[[example]]
+name = "evm_trace"
+path = "examples/evm_trace_example.rs"
+
+[[example]]
+name = "evm_prover"
+path = "examples/evm_prover.rs"
+
+[features]
+default = []
+json = ["serde", "serde_json"]
+
+[dependencies]
+jolt-evm = { path = "..", package = "jolt-evm" }
+jolt-evm-guest = { path = "../guest", features = ["host-side"] }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+postcard = { workspace = true, features = ["use-std"] }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+hex.workspace = true

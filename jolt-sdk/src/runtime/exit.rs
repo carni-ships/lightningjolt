@@ -13,13 +13,11 @@ cfg_if::cfg_if! {
 
         /// Exit the program.
         ///
-        /// Enters an infinite loop (`j .`) which the Jolt emulator detects via PC stall
+        /// Enters an infinite loop (`jalr x0, x0, 0`) which the Jolt emulator detects via PC stall
         /// (prev_pc == pc) and treats as clean termination.
         #[no_mangle]
         pub extern "C" fn __platform_exit(_code: i32) -> ! {
-            unsafe {
-                core::arch::asm!("j .", options(noreturn));
-            }
+            loop {}
         }
 
         /// Platform-specific abort handler for signal-based panic detection.

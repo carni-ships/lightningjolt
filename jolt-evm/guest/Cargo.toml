@@ -1,0 +1,16 @@
+[package]
+name = "jolt-evm-guest"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Host-side API generation (needs jolt/host for macro-generated functions)
+# Enable this when depending on this crate from a host binary
+host-side = ["jolt/host"]
+# Guest binary compilation (for RISC-V no_std)
+guest = []
+
+[dependencies]
+once_cell = { version = "1.18", default-features = false, features = ["alloc", "race"] }
+jolt-evm = { path = "..", package = "jolt-evm" }
+jolt = { package = "jolt-sdk", path = "../../jolt-sdk" }

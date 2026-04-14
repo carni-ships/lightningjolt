@@ -17,7 +17,7 @@ edition = "2021"
 
 [features]
 std = ["random"]
-random = ["dep:getrandom_v02", "dep:getrandom_v03", "dep:rand"]
+random = ["dep:getrandom_v02", "dep:rand"]
 malloc-shim = []
 
 [dependencies]
@@ -29,13 +29,8 @@ rand = { workspace = true, default-features = false, features = [
 getrandom_v02 = { workspace = true, default-features = false, features = [
     "custom",
 ], optional = true }
-getrandom_v03 = { workspace = true, default-features = false, features = [
-], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom_v02 = { workspace = true, default-features = false, features = [
     "js",
-], optional = true }
-getrandom_v03 = { workspace = true, default-features = false, features = [
-    "wasm_js",
 ], optional = true }

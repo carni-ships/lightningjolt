@@ -106,6 +106,9 @@ pub mod setup;
 #[cfg(feature = "arkworks")]
 pub mod backends;
 
+#[cfg(feature = "dory-prime")]
+pub mod dory_prime;
+
 pub use error::DoryError;
 pub use evaluation_proof::create_evaluation_proof;
 pub use messages::{

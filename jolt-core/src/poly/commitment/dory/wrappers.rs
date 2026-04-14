@@ -400,4 +400,8 @@ impl<'a, T: Transcript> DoryTranscript for JoltToDoryTranscript<'a, T> {
     fn reset(&mut self, _domain_label: &[u8]) {
         panic!("Reset not supported for JoltToDoryTranscript")
     }
+
+    fn fork(&self) -> Self {
+        panic!("Fork not yet supported for JoltToDoryTranscript - Dory-Prime precomputation is a placeholder")
+    }
 }

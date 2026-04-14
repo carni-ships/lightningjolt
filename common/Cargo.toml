@@ -6,10 +6,10 @@ edition = "2021"
 [features]
 default = ["std"]
 allocative = ["dep:allocative"]
+ark-serialize = ["dep:ark-serialize"]
 std = [
     "allocative",
-    "dep:ark-serialize",
-    "ark-serialize?/std",
+    "ark-serialize",
     "serde/std",
     "syn/full",
 ]

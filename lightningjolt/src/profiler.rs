@@ -173,10 +173,10 @@ fn run_single_profile(tier: &BenchTier) -> StageTimings {
 
     // Phase 2: Preprocessing (one-time per circuit)
     let pp_start = Instant::now();
-    let shared = guest::preprocess_shared_prove_block(&mut program);
+    let shared = guest::preprocess_shared_prove_block(&mut program).unwrap();
     let prover_pp = guest::preprocess_prover_prove_block(shared.clone());
     let verifier_pp =
-        guest::preprocess_verifier_prove_block(shared, prover_pp.generators.to_verifier_setup());
+        guest::preprocess_verifier_prove_block(shared, prover_pp.generators.to_verifier_setup(), None);
     let preprocess_secs = pp_start.elapsed().as_secs_f64();
     println!("  Preprocess:   {preprocess_secs:>8.3}s");
 
