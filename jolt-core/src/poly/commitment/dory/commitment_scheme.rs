@@ -232,20 +232,49 @@ impl CommitmentScheme for DoryCommitmentScheme {
         #[cfg(not(feature = "zk"))]
         type DoryMode = dory::Transparent;
 
-        let (proof, y_blinding) =
-            dory::prove::<ArkFr, BN254, JoltG1Routines, JoltG2Routines, _, _, DoryMode>(
+        #[cfg(feature = "dory-prime")]
+        {
+            let _prove_span = trace_span!("DoryCommitmentScheme::prove_dory_prime").entered();
+            // Use Dory-Prime parallel prover when the feature is enabled
+            let dory_prime_proof = dory::dory_prime::prove_dory_prime::<
+                ArkFr, BN254, JoltG1Routines, JoltG2Routines, _, _, DoryMode,
+            >(
                 poly,
                 &ark_point,
-                row_commitments,
+                Some(row_commitments),
                 commit_blind,
                 nu,
                 sigma,
-                setup,
+                &setup.0,
                 &mut dory_transcript,
             )
-            .expect("proof generation should succeed");
+            .expect("Dory-Prime proof generation should succeed");
 
-        (proof, y_blinding.map(|b| ark_to_jolt(&b)))
+            // DoryPrimeProof wraps DoryProof in batch_proof field
+            let proof = dory_prime_proof.batch_proof;
+            // Dory-Prime doesn't use blinding in Transparent mode
+            let y_blinding = None;
+            (proof, y_blinding)
+        }
+
+        #[cfg(not(feature = "dory-prime"))]
+        {
+            let _prove_span = trace_span!("DoryCommitmentScheme::prove_standard").entered();
+            let (proof, y_blinding) =
+                dory::prove::<ArkFr, BN254, JoltG1Routines, JoltG2Routines, _, _, DoryMode>(
+                    poly,
+                    &ark_point,
+                    row_commitments,
+                    commit_blind,
+                    nu,
+                    sigma,
+                    setup,
+                    &mut dory_transcript,
+                )
+                .expect("proof generation should succeed");
+
+            (proof, y_blinding.map(|b| ark_to_jolt(&b)))
+        }
     }
 
     fn verify<ProofTranscript: Transcript>(
