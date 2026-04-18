@@ -9,6 +9,18 @@ edition = "2021"
 host-side = ["jolt/host"]
 # Guest binary compilation (for RISC-V no_std)
 guest = []
+# Lattice commitment scheme (faster arithmetic)
+lattice = ["jolt/lattice"]
+# GPU acceleration via zkMetal (requires lattice)
+zkmetal = ["lattice", "jolt/zkmetal"]
+# Metal GPU acceleration for BN254 pairing (Apple Silicon)
+metal-pairing = ["jolt/metal-pairing"]
+# Dory-Prime parallel commitment scheme
+dory-prime = ["jolt/dory-prime"]
+# ICICLE MSM acceleration (CPU)
+icicle = ["jolt/icicle"]
+# ICICLE MSM acceleration (Metal GPU)
+icicle-metal = ["jolt/icicle-metal"]
 
 [dependencies]
 once_cell = { version = "1.18", default-features = false, features = ["alloc", "race"] }

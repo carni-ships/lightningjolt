@@ -39,6 +39,8 @@ prover = [
     "dory/backends",
     "dory/cache", # This includes `parallel` feature
     "dory/disk-persistence",
+    "dory-prime",  # Enable Dory-Prime for parallel proof generation
+    "lattice",      # Enable lattice/NTT-based commitment for faster reduce-and-fold
     # "parallel-sumcheck",  # Disabled by default - adds overhead for small proofs
 ]
 # Enables parallelization of sumcheck stage initialization.

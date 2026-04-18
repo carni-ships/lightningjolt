@@ -18,6 +18,12 @@ edition = "2021"
 default = ["jolt-platform/random"]
 debug = ["zeroos?/debug"]
 zk = ["jolt-core?/zk"]
+lattice = ["jolt-core?/lattice"]
+zkmetal = ["jolt-core?/zkmetal"]
+metal-pairing = ["jolt-core?/metal-pairing"]
+dory-prime = ["jolt-core?/dory-prime"]
+icicle = ["jolt-core?/icicle"]
+icicle-metal = ["jolt-core?/icicle-metal"]
 
 host = [
     "jolt-core/default",

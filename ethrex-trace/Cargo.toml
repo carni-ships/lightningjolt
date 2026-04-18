@@ -3,6 +3,15 @@ name = "ethrex-trace"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+lattice = ["jolt-evm-guest/lattice"]
+zkmetal = ["lattice", "jolt-evm-guest/zkmetal"]
+metal-pairing = ["jolt-evm-guest/metal-pairing"]
+dory-prime = ["jolt-evm-guest/dory-prime"]
+icicle = ["jolt-evm-guest/icicle"]
+icicle-metal = ["jolt-evm-guest/icicle-metal"]
+
 [dependencies]
 # Ethrex VM for EVM execution
 ethrex-vm = { path = "../../ethrex/crates/vm" }

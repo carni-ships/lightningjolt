@@ -114,8 +114,11 @@ where
         }
     };
 
+    let setup_start = std::time::Instant::now();
+    let vec_start = std::time::Instant::now();
     let (left_vec, right_vec) = polynomial.compute_evaluation_vectors(point, nu, sigma);
     let v_vec = polynomial.vector_matrix_product(&left_vec, nu, sigma);
+    eprintln!("  [DORY]   vector compute: {}ms", vec_start.elapsed().as_millis());
 
     let mut padded_row_commitments = row_commitments.clone();
     if nu < sigma {
@@ -132,27 +135,45 @@ where
 
     let g2_fin = &setup.g2_vec[0];
 
+    // VMV message timing
+    let vmv_start = std::time::Instant::now();
+    let msm1_start = std::time::Instant::now();
+    let t_vec_v = M1::msm(&padded_row_commitments, &v_vec);
+    eprintln!("  [DORY]     MSM1 (padded_row * v_vec, {} elements): {}ms", padded_row_commitments.len(), msm1_start.elapsed().as_millis());
+
+    let pair1_start = std::time::Instant::now();
+    let paired_tvv = E::pair(&t_vec_v, g2_fin);
+    eprintln!("  [DORY]     Pair1 (t_vec_v, g2_fin): {}ms", pair1_start.elapsed().as_millis());
+
+    let msm2_start = std::time::Instant::now();
+    let g1_v_vec = M1::msm(&setup.g1_vec[..1 << sigma], &v_vec);
+    eprintln!("  [DORY]     MSM2 (g1_vec * v_vec, {} elements): {}ms", 1 << sigma, msm2_start.elapsed().as_millis());
+
+    let pair2_start = std::time::Instant::now();
+    let paired_g1vv = E::pair(&g1_v_vec, g2_fin);
+    eprintln!("  [DORY]     Pair2 (g1_v_vec, g2_fin): {}ms", pair2_start.elapsed().as_millis());
+
+    let msm3_start = std::time::Instant::now();
+    let row_left_msm = M1::msm(&row_commitments, &left_vec);
+    eprintln!("  [DORY]     MSM3 (row_commitments * left_vec, {} elements): {}ms", row_commitments.len(), msm3_start.elapsed().as_millis());
+
     // Compute VMV message with parallelization
     let (c, (d2, e1)) = rayon::join(
         || {
-            let t_vec_v = M1::msm(&padded_row_commitments, &v_vec);
-            Mo::mask(E::pair(&t_vec_v, g2_fin), &setup.ht, &r_c)
+            Mo::mask(paired_tvv.clone(), &setup.ht, &r_c)
         },
         || {
             rayon::join(
                 || {
-                    Mo::mask(
-                        E::pair(&M1::msm(&setup.g1_vec[..1 << sigma], &v_vec), g2_fin),
-                        &setup.ht,
-                        &r_d2,
-                    )
+                    Mo::mask(paired_g1vv.clone(), &setup.ht, &r_d2)
                 },
-                || Mo::mask(M1::msm(&row_commitments, &left_vec), &setup.h1, &r_e1),
+                || Mo::mask(row_left_msm.clone(), &setup.h1, &r_e1),
             )
         },
     );
 
     let vmv_message = VMVMessage { c, d2, e1 };
+    eprintln!("  [DORY] VMV message: {}ms (total VMV)", vmv_start.elapsed().as_millis());
 
     transcript.append_serde(b"vmv_c", &vmv_message.c);
     transcript.append_serde(b"vmv_d2", &vmv_message.d2);
@@ -187,9 +208,14 @@ where
 
     // PARALLEL REDUCE-AND-FOLD PHASE
     // Each round computes messages with maximum parallelism
-    for _round in 0..num_rounds {
+    let rf_start = std::time::Instant::now();
+    for round in 0..num_rounds {
+        let round_start = std::time::Instant::now();
+
         // First message: computes d1_left/d1_right, d2_left/d2_right, e1_beta/e2_beta in parallel
+        let fm_start = std::time::Instant::now();
         let first_msg = prover_state.compute_first_message::<M1, M2>();
+        eprintln!("  [DORY]   round {} first_msg: {}ms", round, fm_start.elapsed().as_millis());
 
         transcript.append_serde(b"d1_left", &first_msg.d1_left);
         transcript.append_serde(b"d1_right", &first_msg.d1_right);
@@ -203,7 +229,9 @@ where
         first_messages.push(first_msg);
 
         // Second message: computes c_plus/c_minus, e1_plus/e1_minus, e2_plus/e2_minus in parallel
+        let sm_start = std::time::Instant::now();
         let second_msg = prover_state.compute_second_message::<M1, M2>();
+        eprintln!("  [DORY]   round {} second_msg: {}ms (round total: {}ms)", round, sm_start.elapsed().as_millis(), round_start.elapsed().as_millis());
 
         transcript.append_serde(b"c_plus", &second_msg.c_plus);
         transcript.append_serde(b"c_minus", &second_msg.c_minus);
@@ -216,11 +244,14 @@ where
         prover_state.apply_second_challenge::<M1, M2>(&alpha);
         second_messages.push(second_msg);
     }
+    eprintln!("  [DORY] {} rounds of reduce-and-fold: {}ms", num_rounds, rf_start.elapsed().as_millis());
 
     let gamma = transcript.challenge_scalar(b"gamma");
 
     // Final scalar product message
+    let final_start = std::time::Instant::now();
     let final_message = prover_state.compute_final_message::<M1, M2>(&gamma);
+    eprintln!("  [DORY] Final message (scalar product): {}ms", final_start.elapsed().as_millis());
 
     // Build the proof
     let proof = DoryProof {
@@ -241,6 +272,10 @@ where
         #[cfg(feature = "zk")]
         scalar_product_proof: None,
     };
+
+    let total = setup_start.elapsed().as_millis();
+    eprintln!("  [DORY] Total prove time: {}ms (setup={}, vmv+rf={})",
+        total, setup_start.elapsed().as_millis(), vmv_start.elapsed().as_millis());
 
     Ok(DoryPrimeProof::new(proof, sigma, nu))
 }

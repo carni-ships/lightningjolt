@@ -501,9 +501,23 @@ impl<
             self.preprocessing.shared.bytecode.code_size
         );
 
-        let (commitments, mut opening_proof_hints) = self.generate_and_commit_witness_polynomials();
-        let untrusted_advice_commitment = self.generate_and_commit_untrusted_advice();
-        self.generate_and_commit_trusted_advice();
+        let (commitments, mut opening_proof_hints) = {
+            let t = Instant::now();
+            let result = self.generate_and_commit_witness_polynomials();
+            eprintln!("  [PROFILE] generate_and_commit_witness: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        let untrusted_advice_commitment = {
+            let t = Instant::now();
+            let result = self.generate_and_commit_untrusted_advice();
+            eprintln!("  [PROFILE] generate_and_commit_untrusted_advice: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        {
+            let t = Instant::now();
+            self.generate_and_commit_trusted_advice();
+            eprintln!("  [PROFILE] generate_and_commit_trusted_advice: {:.1}ms", t.elapsed().as_millis());
+        }
 
         // Add advice hints for batched Stage 8 opening
         if let Some(hint) = self.advice.trusted_advice_hint.take() {
@@ -513,21 +527,59 @@ impl<
             opening_proof_hints.insert(CommittedPolynomial::UntrustedAdvice, hint);
         }
 
-        let (stage1_uni_skip_first_round_proof, stage1_sumcheck_proof, r_stage1) =
-            self.prove_stage1();
-        let (stage2_uni_skip_first_round_proof, stage2_sumcheck_proof, r_stage2) =
-            self.prove_stage2();
-        let (stage3_sumcheck_proof, r_stage3) = self.prove_stage3();
-        let (stage4_sumcheck_proof, r_stage4) = self.prove_stage4();
-        let (stage5_sumcheck_proof, r_stage5) = self.prove_stage5();
-        let (stage6_sumcheck_proof, r_stage6) = self.prove_stage6();
-        let (stage7_sumcheck_proof, r_stage7) = self.prove_stage7();
+        let (stage1_uni_skip_first_round_proof, stage1_sumcheck_proof, r_stage1) = {
+            let t = Instant::now();
+            let result = self.prove_stage1();
+            eprintln!("  [PROFILE] prove_stage1: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        let (stage2_uni_skip_first_round_proof, stage2_sumcheck_proof, r_stage2) = {
+            let t = Instant::now();
+            let result = self.prove_stage2();
+            eprintln!("  [PROFILE] prove_stage2: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        let (stage3_sumcheck_proof, r_stage3) = {
+            let t = Instant::now();
+            let result = self.prove_stage3();
+            eprintln!("  [PROFILE] prove_stage3: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        let (stage4_sumcheck_proof, r_stage4) = {
+            let t = Instant::now();
+            let result = self.prove_stage4();
+            eprintln!("  [PROFILE] prove_stage4: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        let (stage5_sumcheck_proof, r_stage5) = {
+            let t = Instant::now();
+            let result = self.prove_stage5();
+            eprintln!("  [PROFILE] prove_stage5: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        let (stage6_sumcheck_proof, r_stage6) = {
+            let t = Instant::now();
+            let result = self.prove_stage6();
+            eprintln!("  [PROFILE] prove_stage6: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
+        let (stage7_sumcheck_proof, r_stage7) = {
+            let t = Instant::now();
+            let result = self.prove_stage7();
+            eprintln!("  [PROFILE] prove_stage7: {:.1}ms", t.elapsed().as_millis());
+            result
+        };
 
         let _sumcheck_challenges = [
             r_stage1, r_stage2, r_stage3, r_stage4, r_stage5, r_stage6, r_stage7,
         ];
 
-        let joint_opening_proof = self.prove_stage8(opening_proof_hints);
+        let joint_opening_proof = {
+            let t = Instant::now();
+            let result = self.prove_stage8(opening_proof_hints);
+            eprintln!("  [PROFILE] prove_stage8 (Dory Opening): {:.1}ms", t.elapsed().as_millis());
+            result
+        };
         #[cfg(feature = "zk")]
         let blindfold_proof = self.prove_blindfold(&joint_opening_proof);
 
