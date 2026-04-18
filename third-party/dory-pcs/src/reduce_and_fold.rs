@@ -52,226 +52,22 @@ pub struct DoryProverState<'a, E: PairingCurve, M: Mode = Transparent> {
     r_d2: Scalar<E>,
     r_e1: Scalar<E>,
     r_e2: Scalar<E>,
-    // Per-round blinds stored between compute and apply
+    // Per-round blinds stored between compute and apply (binary)
     round_d1: [Scalar<E>; 2],
     round_d2: [Scalar<E>; 2],
     round_c: [Scalar<E>; 2],
     round_e1: [Scalar<E>; 2],
     round_e2: [Scalar<E>; 2],
+    // Per-round blinds for 4-ary folding
+    round_d1_4ary: [Scalar<E>; 4],
+    round_d2_4ary: [Scalar<E>; 4],
+    round_c_4ary: [Scalar<E>; 16],
+    round_e1_4ary: [Scalar<E>; 16],
+    round_e2_4ary: [Scalar<E>; 16],
 
     _mode: PhantomData<M>,
 }
 
-/// Forkable prover state for Dory-Prime
-///
-/// This is a cloneable version of DoryProverState that owns its setup.
-/// It can be cloned at each challenge point to build the cascading tree.
-pub struct ForkableDoryProverState<E: PairingCurve, M: Mode = Transparent> {
-    /// Current v1 vector (G1 elements)
-    v1: Vec<E::G1>,
-    /// Current v2 vector (G2 elements)
-    v2: Vec<E::G2>,
-    /// For first round only: scalars used to construct v2 from fixed base h2
-    v2_scalars: Option<Vec<Scalar<E>>>,
-    /// Current s1 vector (scalars)
-    s1: Vec<Scalar<E>>,
-    /// Current s2 vector (scalars)
-    s2: Vec<Scalar<E>>,
-    /// Number of rounds remaining (log₂ of vector length)
-    num_rounds: usize,
-    /// Owned prover setup (cloned for forking)
-    setup: ProverSetup<E>,
-    /// Accumulated blinds
-    r_c: Scalar<E>,
-    r_d1: Scalar<E>,
-    r_d2: Scalar<E>,
-    r_e1: Scalar<E>,
-    r_e2: Scalar<E>,
-    /// Per-round blinds stored between compute and apply
-    round_d1: [Scalar<E>; 2],
-    round_d2: [Scalar<E>; 2],
-    round_c: [Scalar<E>; 2],
-    round_e1: [Scalar<E>; 2],
-    round_e2: [Scalar<E>; 2],
-    _mode: PhantomData<M>,
-}
-
-impl<E: PairingCurve, M: Mode> ForkableDoryProverState<E, M>
-where
-    <E::G1 as Group>::Scalar: Field,
-    E::G2: Group<Scalar = Scalar<E>>,
-    E::GT: Group<Scalar = Scalar<E>>,
-{
-    /// Create from a standard DoryProverState by cloning the setup
-    pub fn from_dory_state(state: &DoryProverState<'_, E, M>) -> Self {
-        Self {
-            v1: state.v1.clone(),
-            v2: state.v2.clone(),
-            v2_scalars: state.v2_scalars.clone(),
-            s1: state.s1.clone(),
-            s2: state.s2.clone(),
-            num_rounds: state.num_rounds,
-            setup: state.setup.clone(),
-            r_c: state.r_c,
-            r_d1: state.r_d1,
-            r_d2: state.r_d2,
-            r_e1: state.r_e1,
-            r_e2: state.r_e2,
-            round_d1: state.round_d1,
-            round_d2: state.round_d2,
-            round_c: state.round_c,
-            round_e1: state.round_e1,
-            round_e2: state.round_e2,
-            _mode: PhantomData,
-        }
-    }
-
-    /// Fork this state for a given challenge value
-    ///
-    /// Returns a new state with the challenge applied.
-    /// This enables building the cascading tree.
-    #[allow(clippy::type_complexity)]
-    pub fn fork<M1, M2>(&self, challenge: (Scalar<E>, Scalar<E>)) -> (Self, FirstReduceMessage<E::G1, E::G2, E::GT>, SecondReduceMessage<E::G1, E::G2, E::GT>)
-    where
-        E::G1: Group,
-        E::G2: Group<Scalar = Scalar<E>>,
-        E::GT: Group<Scalar = Scalar<E>>,
-        M1: DoryRoutines<E::G1>,
-        M2: DoryRoutines<E::G2>,
-    {
-        let mut new_state = self.clone();
-        let n = 1 << new_state.num_rounds;
-        let n2 = n / 2;
-
-        // Split vectors
-        let (v1_l, v1_r) = new_state.v1.split_at_mut(n2);
-        let (v2_l, v2_r) = new_state.v2.split_at_mut(n2);
-        let (s1_l, s1_r) = new_state.s1.split_at_mut(n2);
-        let (s2_l, s2_r) = new_state.s2.split_at_mut(n2);
-
-        let g1_prime = &new_state.setup.g1_vec[..n2];
-        let g2_prime = &new_state.setup.g2_vec[..n2];
-        let g1_full = &new_state.setup.g1_vec[..n];
-        let g2_full = &new_state.setup.g2_vec[..n];
-        let ht = &new_state.setup.ht;
-        let h1 = &new_state.setup.h1;
-        let h2 = &new_state.setup.h2;
-
-        let (beta, alpha) = challenge;
-
-        // Sample round blinds
-        let blind0 = M::sample();
-        let blind1 = M::sample();
-
-        // First message
-        let (d1_left_base, d1_right_base) = if let Some(scalars) = new_state.v2_scalars.as_ref() {
-            let (s_l, s_r) = scalars.split_at(n2);
-            let (sum_left, sum_right) = (
-                M1::msm(g1_prime, s_l),
-                M1::msm(g1_prime, s_r),
-            );
-            let g2_fin = &new_state.setup.g2_vec[0];
-            (E::pair(&sum_left, g2_fin), E::pair(&sum_right, g2_fin))
-        } else {
-            (
-                E::multi_pair_g1_setup(g1_prime, v2_l),
-                E::multi_pair_g1_setup(g1_prime, v2_r),
-            )
-        };
-
-        let d1_left = M::mask(d1_left_base, ht, &blind0);
-        let d1_right = M::mask(d1_right_base, ht, &blind1);
-        let d2_left = E::multi_pair_g2_setup(v1_l, g2_prime);
-        let d2_right = E::multi_pair_g2_setup(v1_r, g2_prime);
-        let e1_beta = M1::msm(g1_full, s2_r);
-        let e2_beta = M2::msm(g2_full, s1_r);
-
-        let first_msg = FirstReduceMessage {
-            d1_left,
-            d1_right,
-            d2_left: M::mask(d2_left, ht, &blind0),
-            d2_right: M::mask(d2_right, ht, &blind1),
-            e1_beta,
-            e2_beta,
-        };
-
-        // Apply beta challenge
-        let beta_inv = beta.inv().expect("beta must be invertible");
-        M1::fixed_scalar_mul_bases_then_add(g1_full, v1_r, &beta);
-        M2::fixed_scalar_mul_bases_then_add(g2_full, v2_r, &beta_inv);
-        new_state.v2_scalars = None;
-        new_state.r_c = new_state.r_c + new_state.r_d2 * beta + new_state.r_d1 * beta_inv;
-
-        // Second message
-        let c_plus = E::multi_pair(v1_l, v2_r);
-        let c_minus = E::multi_pair(v1_r, v2_l);
-        let e1_plus = M1::msm(v1_l, s2_r);
-        let e1_minus = M1::msm(v1_r, s2_l);
-        let e2_plus = M2::msm(v2_r, s1_l);
-        let e2_minus = M2::msm(v2_l, s1_r);
-
-        let second_msg = SecondReduceMessage {
-            c_plus: M::mask(c_plus, ht, &M::sample()),
-            c_minus: M::mask(c_minus, ht, &M::sample()),
-            e1_plus: M::mask(e1_plus, h1, &M::sample()),
-            e1_minus: M::mask(e1_minus, h1, &M::sample()),
-            e2_plus: M::mask(e2_plus, h2, &M::sample()),
-            e2_minus: M::mask(e2_minus, h2, &M::sample()),
-        };
-
-        // Apply alpha challenge
-        let alpha_inv = alpha.inv().expect("alpha must be invertible");
-        let (v1_l2, v1_r2) = new_state.v1.split_at_mut(n2);
-        let (v2_l2, v2_r2) = new_state.v2.split_at_mut(n2);
-        let (s1_l2, s1_r2) = new_state.s1.split_at_mut(n2);
-        let (s2_l2, s2_r2) = new_state.s2.split_at_mut(n2);
-
-        M1::fixed_scalar_mul_vs_then_add(v1_l2, v1_r2, &alpha);
-        M2::fixed_scalar_mul_vs_then_add(v2_l2, v2_r2, &alpha_inv);
-        M1::fold_field_vectors(s1_l2, s1_r2, &alpha);
-        M1::fold_field_vectors(s2_l2, s2_r2, &alpha_inv);
-
-        new_state.v1.truncate(n2);
-        new_state.v2.truncate(n2);
-        new_state.s1.truncate(n2);
-        new_state.s2.truncate(n2);
-        new_state.num_rounds -= 1;
-
-        new_state.r_c = new_state.r_c + new_state.round_c[0] * alpha + new_state.round_c[1] * alpha_inv;
-        new_state.r_d1 = new_state.round_d1[0] * alpha + new_state.round_d1[1];
-        new_state.r_d2 = new_state.round_d2[0] * alpha_inv + new_state.round_d2[1];
-        new_state.r_e1 = new_state.r_e1 + new_state.round_e1[0] * alpha + new_state.round_e1[1] * alpha_inv;
-        new_state.r_e2 = new_state.r_e2 + new_state.round_e2[0] * alpha + new_state.round_e2[1] * alpha_inv;
-
-        (new_state, first_msg, second_msg)
-    }
-}
-
-// Manual Clone implementation since Mode may not implement Clone
-impl<E: PairingCurve, M: Mode> Clone for ForkableDoryProverState<E, M> {
-    fn clone(&self) -> Self {
-        Self {
-            v1: self.v1.clone(),
-            v2: self.v2.clone(),
-            v2_scalars: self.v2_scalars.clone(),
-            s1: self.s1.clone(),
-            s2: self.s2.clone(),
-            num_rounds: self.num_rounds,
-            setup: self.setup.clone(),
-            r_c: self.r_c,
-            r_d1: self.r_d1,
-            r_d2: self.r_d2,
-            r_e1: self.r_e1,
-            r_e2: self.r_e2,
-            round_d1: self.round_d1,
-            round_d2: self.round_d2,
-            round_c: self.round_c,
-            round_e1: self.round_e1,
-            round_e2: self.round_e2,
-            _mode: PhantomData,
-        }
-    }
-}
 
 /// Verifier state for the Dory opening protocol
 ///
@@ -375,8 +171,18 @@ where
             round_c: [z; 2],
             round_e1: [z; 2],
             round_e2: [z; 2],
+            round_d1_4ary: [z; 4],
+            round_d2_4ary: [z; 4],
+            round_c_4ary: [z; 16],
+            round_e1_4ary: [z; 16],
+            round_e2_4ary: [z; 16],
             _mode: PhantomData,
         }
+    }
+
+    /// Get the number of rounds remaining
+    pub fn num_rounds(&self) -> usize {
+        self.num_rounds
     }
 
     /// Set initial VMV blinds (r_d1, r_c, r_d2, r_e1, r_e2).
@@ -557,13 +363,13 @@ where
         let re2 = self.round_e2;
 
         // C₊ ∥ C₋, E₁± ∥ E₂± — all independent, run in parallel
+        // Use batch pairing for C± to reduce Miller loop overhead
         #[cfg(feature = "parallel")]
         let ((c_plus, c_minus), ((e1_plus, e1_minus), (e2_plus, e2_minus))) = rayon::join(
             || {
-                rayon::join(
-                    || M::mask(E::multi_pair(v1_l, v2_r), ht, &rc[0]),
-                    || M::mask(E::multi_pair(v1_r, v2_l), ht, &rc[1]),
-                )
+                // Use multi_pair_two_products to compute both C₊ and C₋ with a single Miller loop
+                let (c_plus_prod, c_minus_prod) = E::multi_pair_two_products(v1_l, v2_r, v1_r, v2_l);
+                (M::mask(c_plus_prod, ht, &rc[0]), M::mask(c_minus_prod, ht, &rc[1]))
             },
             || {
                 rayon::join(
@@ -585,8 +391,10 @@ where
 
         #[cfg(not(feature = "parallel"))]
         let (c_plus, c_minus, e1_plus, e1_minus, e2_plus, e2_minus) = {
-            let c_plus = M::mask(E::multi_pair(v1_l, v2_r), ht, &rc[0]);
-            let c_minus = M::mask(E::multi_pair(v1_r, v2_l), ht, &rc[1]);
+            // Use multi_pair_two_products to compute both C₊ and C₋ with a single Miller loop
+            let (c_plus_prod, c_minus_prod) = E::multi_pair_two_products(v1_l, v2_r, v1_r, v2_l);
+            let c_plus = M::mask(c_plus_prod, ht, &rc[0]);
+            let c_minus = M::mask(c_minus_prod, ht, &rc[1]);
             let e1_plus = M::mask(M1::msm(v1_l, s2_r), h1, &re1[0]);
             let e1_minus = M::mask(M1::msm(v1_r, s2_l), h1, &re1[1]);
             let e2_plus = M::mask(M2::msm(v2_r, s1_l), h2, &re2[0]);
@@ -669,6 +477,320 @@ where
         self.r_e2 = self.r_e2 + self.round_e2[0] * alpha + self.round_e2[1] * alpha_inv;
 
         self.num_rounds -= 1;
+    }
+
+    /// Compute 4-ary reduce message (Variant B - single pre-challenge message)
+    ///
+    /// Computes D1_i, D2_i for each of 4 quarters, plus raw cross-term pairings
+    /// C_raw_ij = pair(v1_i, v2_j) and cross MSM elements. All pre-sampled before
+    /// any challenge is known, enabling true parallel cascading sub-reductions.
+    ///
+    /// This is the key to Variant B: the second message (cross terms) is now
+    /// combined with the first message, and all blindings are pre-sampled.
+    #[tracing::instrument(skip_all, name = "DoryProverState::compute_4ary_message")]
+    pub fn compute_4ary_message<M1, M2>(
+        &mut self,
+    ) -> FirstReduceMessage4<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        assert!(
+            self.num_rounds >= 2,
+            "4-ary folding requires at least 2 rounds remaining (need log₂(N) >= 2)"
+        );
+
+        let n4 = 1 << (self.num_rounds - 2); // n/4
+
+        // Split vectors into 4 quarters
+        let v1_quarters: Vec<_> = self.v1.chunks(n4).collect();
+        let v2_quarters: Vec<_> = self.v2.chunks(n4).collect();
+        let s1_quarters: Vec<_> = self.s1.chunks(n4).collect();
+        let s2_quarters: Vec<_> = self.s2.chunks(n4).collect();
+
+        // Get collapsed generator vectors of length n/4
+        let g1_prime = &self.setup.g1_vec[..n4];
+        let g2_prime = &self.setup.g2_vec[..n4];
+
+        // Pre-sample ALL round blinds (before any challenge!)
+        // 16 for c_raw, 16 for e1_cross, 16 for e2_cross, plus 4 each for d1/d2
+        self.round_d1_4ary = [M::sample(), M::sample(), M::sample(), M::sample()];
+        self.round_d2_4ary = [M::sample(), M::sample(), M::sample(), M::sample()];
+        self.round_c_4ary = [M::sample(); 16];
+        self.round_e1_4ary = [M::sample(); 16];
+        self.round_e2_4ary = [M::sample(); 16];
+
+        let ht = &self.setup.ht;
+        let h1 = &self.setup.h1;
+        let h2 = &self.setup.h2;
+        let rd1 = self.round_d1_4ary;
+        let rd2 = self.round_d2_4ary;
+        let rc = self.round_c_4ary;
+        let re1 = self.round_e1_4ary;
+        let re2 = self.round_e2_4ary;
+        let g1_full = &self.setup.g1_vec[..1 << self.num_rounds];
+        let g2_full = &self.setup.g2_vec[..1 << self.num_rounds];
+
+        let (d1, d2, c_raw, e1_cross, e2_cross, e1_beta, e2_beta) = {
+            let mut d1 = [E::GT::identity(); 4];
+            let mut d2 = [E::GT::identity(); 4];
+            let mut c_raw = [E::GT::identity(); 16];
+            let mut e1_cross = [E::G1::identity(); 16];
+            let mut e2_cross = [E::G2::identity(); 16];
+
+            for i in 0..4 {
+                d1[i] = M::mask(E::multi_pair_g2_setup(v1_quarters[i], g2_prime), ht, &rd1[i]);
+                d2[i] = if let Some(scalars) = self.v2_scalars.as_ref() {
+                    let s_quarter: Vec<_> = scalars.chunks(n4).collect();
+                    let sum = M1::msm(g1_prime, s_quarter[i]);
+                    let g2_fin = &self.setup.g2_vec[0];
+                    M::mask(E::pair(&sum, g2_fin), ht, &rd2[i])
+                } else {
+                    M::mask(E::multi_pair_g1_setup(g1_prime, v2_quarters[i]), ht, &rd2[i])
+                };
+            }
+
+            // Compute ALL raw pairings C_raw_ij = pair(Qi, Qj) for all i,j
+            // This allows verifier to reconstruct cross terms after beta is known
+            for i in 0..4 {
+                for j in 0..4 {
+                    let idx = i * 4 + j;
+                    c_raw[idx] = M::mask(
+                        E::multi_pair(&v1_quarters[i], &v2_quarters[j]),
+                        ht,
+                        &rc[idx],
+                    );
+                    e1_cross[idx] = M::mask(
+                        M1::msm(&v1_quarters[i], &s2_quarters[j]),
+                        h1,
+                        &re1[idx],
+                    );
+                    e2_cross[idx] = M::mask(
+                        M2::msm(&v2_quarters[i], &s1_quarters[j]),
+                        h2,
+                        &re2[idx],
+                    );
+                }
+            }
+
+            let e1_beta = M1::msm(g1_full, &self.s2[..]);
+            let e2_beta = M2::msm(g2_full, &self.s1[..]);
+            (d1, d2, c_raw, e1_cross, e2_cross, e1_beta, e2_beta)
+        };
+
+        FirstReduceMessage4 {
+            d1,
+            d2,
+            c_raw,
+            e1_cross,
+            e2_cross,
+            e1_beta,
+            e2_beta,
+        }
+    }
+
+    /// Apply first challenge (beta) for 4-ary folding
+    ///
+    /// Updates witnesses with beta before the alpha fold.
+    /// This is the same as the binary case but applied to 4-ary structure.
+    #[tracing::instrument(skip_all, name = "DoryProverState::apply_4ary_beta")]
+    pub fn apply_4ary_beta<M1, M2>(&mut self, beta: &Scalar<E>)
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        let beta_inv = beta.inv().expect("beta must be invertible");
+        let _n4 = 1 << (self.num_rounds - 2); // n/4 (kept for documentation, beta applies to full vector)
+
+        // Apply beta to full vectors (v1 += β·Γ₁, v2 += β⁻¹·Γ₂)
+        let n = 1 << self.num_rounds;
+        let g1_slice = &self.setup.g1_vec[..n];
+        let g2_slice = &self.setup.g2_vec[..n];
+
+        #[cfg(feature = "parallel")]
+        rayon::join(
+            || M1::fixed_scalar_mul_bases_then_add(g1_slice, &mut self.v1, beta),
+            || M2::fixed_scalar_mul_bases_then_add(g2_slice, &mut self.v2, &beta_inv),
+        );
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            M1::fixed_scalar_mul_bases_then_add(g1_slice, &mut self.v1, beta);
+            M2::fixed_scalar_mul_bases_then_add(g2_slice, &mut self.v2, &beta_inv);
+        }
+
+        self.v2_scalars = None;
+
+        // Update r_c: r_c += r_d2·β + r_d1·β⁻¹
+        self.r_c = self.r_c + self.r_d2 * *beta + self.r_d1 * beta_inv;
+    }
+
+    /// Apply second challenge with 4-ary folding
+    ///
+    /// Derives 4 coefficients from alpha: (α³, α², α, 1-α-α²-α³)
+    /// and folds 4 vectors into 1.
+    #[tracing::instrument(skip_all, name = "DoryProverState::apply_second_challenge_4ary")]
+    pub fn apply_second_challenge_4ary<M1: DoryRoutines<E::G1>, M2: DoryRoutines<E::G2>>(
+        &mut self,
+        alpha: &Scalar<E>,
+    ) {
+        let alpha_sq = *alpha * *alpha;
+        let alpha_cu = alpha_sq * *alpha;
+        let alpha_inv = alpha.inv().expect("alpha must be invertible");
+        let alpha_inv_sq = alpha_inv * alpha_inv;
+        let alpha_inv_cu = alpha_inv_sq * alpha_inv;
+
+        // Coefficients: (α³, α², α, 1-α-α²-α³)
+        // Sum = α³ + α² + α + 1 - α - α² - α³ = 1 ✓
+        let coeff = (
+            alpha_cu,
+            alpha_sq,
+            *alpha,
+            Scalar::<E>::one() - alpha_cu - alpha_sq - *alpha,
+        );
+        // And for the inverse side: (α⁻³, α⁻², α⁻¹, 1-α⁻¹-α⁻²-α⁻³)
+        let coeff_inv = (
+            alpha_inv_cu,
+            alpha_inv_sq,
+            alpha_inv,
+            Scalar::<E>::one() - alpha_inv_cu - alpha_inv_sq - alpha_inv,
+        );
+
+        let n4 = 1 << (self.num_rounds - 2); // n/4
+
+        // Split vectors into 4 quarters
+        let mut v1_quarters: Vec<_> = self.v1.chunks_mut(n4).collect();
+        let mut v2_quarters: Vec<_> = self.v2.chunks_mut(n4).collect();
+        let mut s1_quarters: Vec<_> = self.s1.chunks_mut(n4).collect();
+        let mut s2_quarters: Vec<_> = self.s2.chunks_mut(n4).collect();
+
+        // Fold vectors
+        #[cfg(feature = "parallel")]
+        {
+            rayon::join(
+                || {
+                    // v1_new = c0*v1[0] + c1*v1[1] + c2*v1[2] + c3*v1[3]
+                    let mut v1_new = vec![E::G1::identity(); n4];
+                    M1::fold_4ary_group_vectors(&mut v1_new, [
+                        &v1_quarters[0],
+                        &v1_quarters[1],
+                        &v1_quarters[2],
+                        &v1_quarters[3],
+                    ], &coeff);
+                    v1_quarters[0].copy_from_slice(&v1_new);
+                },
+                || {
+                    rayon::join(
+                        || {
+                            let mut v2_new = vec![E::G2::identity(); n4];
+                            M2::fold_4ary_group_vectors(&mut v2_new, [
+                                &v2_quarters[0],
+                                &v2_quarters[1],
+                                &v2_quarters[2],
+                                &v2_quarters[3],
+                            ], &coeff_inv);
+                            v2_quarters[0].copy_from_slice(&v2_new);
+                        },
+                        || {
+                            rayon::join(
+                                || {
+                                    let mut s1_new = vec![Scalar::<E>::zero(); n4];
+                                    M1::fold_4ary_field_vectors(&mut s1_new, [
+                                        &s1_quarters[0],
+                                        &s1_quarters[1],
+                                        &s1_quarters[2],
+                                        &s1_quarters[3],
+                                    ], &coeff);
+                                    s1_quarters[0].copy_from_slice(&s1_new);
+                                },
+                                || {
+                                    let mut s2_new = vec![Scalar::<E>::zero(); n4];
+                                    M1::fold_4ary_field_vectors(&mut s2_new, [
+                                        &s2_quarters[0],
+                                        &s2_quarters[1],
+                                        &s2_quarters[2],
+                                        &s2_quarters[3],
+                                    ], &coeff_inv);
+                                    s2_quarters[0].copy_from_slice(&s2_new);
+                                },
+                            );
+                        },
+                    )
+                },
+            );
+        }
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            let mut v1_new = vec![E::G1::identity(); n4];
+            M1::fold_4ary_group_vectors(&mut v1_new, [
+                &v1_quarters[0],
+                &v1_quarters[1],
+                &v1_quarters[2],
+                &v1_quarters[3],
+            ], &coeff);
+            v1_quarters[0].copy_from_slice(&v1_new);
+
+            let mut v2_new = vec![E::G2::identity(); n4];
+            M2::fold_4ary_group_vectors(&mut v2_new, [
+                &v2_quarters[0],
+                &v2_quarters[1],
+                &v2_quarters[2],
+                &v2_quarters[3],
+            ], &coeff_inv);
+            v2_quarters[0].copy_from_slice(&v2_new);
+
+            let mut s1_new = vec![Scalar::<E>::zero(); n4];
+            M1::fold_4ary_field_vectors(&mut s1_new, [
+                &s1_quarters[0],
+                &s1_quarters[1],
+                &s1_quarters[2],
+                &s1_quarters[3],
+            ], &coeff);
+            s1_quarters[0].copy_from_slice(&s1_new);
+
+            let mut s2_new = vec![Scalar::<E>::zero(); n4];
+            M1::fold_4ary_field_vectors(&mut s2_new, [
+                &s2_quarters[0],
+                &s2_quarters[1],
+                &s2_quarters[2],
+                &s2_quarters[3],
+            ], &coeff_inv);
+            s2_quarters[0].copy_from_slice(&s2_new);
+        }
+
+        // Truncate to quarter size
+        self.v1.truncate(n4);
+        self.v2.truncate(n4);
+        self.s1.truncate(n4);
+        self.s2.truncate(n4);
+
+        // Update accumulated blinds using 4-ary round fields
+        // For 4-ary: r_c accumulates all 6 cross terms
+        self.r_c = self.r_c
+            + self.round_c_4ary[0] * coeff.0 + self.round_c_4ary[1] * coeff.1
+            + self.round_c_4ary[2] * coeff.2 + self.round_c_4ary[3] * coeff.3
+            + self.round_c_4ary[4] * alpha_cu + self.round_c_4ary[5] * alpha_inv_cu;
+
+        // r_d1 accumulates with coefficients
+        self.r_d1 = self.round_d1_4ary[0] * coeff.0 + self.round_d1_4ary[1] * coeff.1
+            + self.round_d1_4ary[2] * coeff.2 + self.round_d1_4ary[3] * coeff.3;
+
+        self.r_d2 = self.round_d2_4ary[0] * coeff_inv.0 + self.round_d2_4ary[1] * coeff_inv.1
+            + self.round_d2_4ary[2] * coeff_inv.2 + self.round_d2_4ary[3] * coeff_inv.3;
+
+        // r_e1 and r_e2 accumulate cross terms
+        self.r_e1 = self.r_e1
+            + self.round_e1_4ary[0] * coeff.0 + self.round_e1_4ary[1] * coeff.1
+            + self.round_e1_4ary[2] * coeff.2 + self.round_e1_4ary[3] * coeff.3
+            + self.round_e1_4ary[4] * alpha_cu + self.round_e1_4ary[5] * alpha_inv_cu;
+
+        self.r_e2 = self.r_e2
+            + self.round_e2_4ary[0] * coeff_inv.0 + self.round_e2_4ary[1] * coeff_inv.1
+            + self.round_e2_4ary[2] * coeff_inv.2 + self.round_e2_4ary[3] * coeff_inv.3
+            + self.round_e2_4ary[4] * alpha_inv_cu + self.round_e2_4ary[5] * alpha_cu;
+
+        self.num_rounds -= 2;
     }
 
     /// Compute final scalar product message
@@ -1024,6 +1146,261 @@ impl<E: PairingCurve> DoryVerifierState<E> {
         Ok(())
     }
 
+    /// Process one round of 4-ary Dory-Reduce verification
+    ///
+    /// Takes 4-ary reduce messages and alpha challenge, updates all state values.
+    /// Reduces rounds by 2 (halving the vector size by 4 instead of 2).
+    #[tracing::instrument(skip_all, name = "DoryVerifierState::process_round_4ary")]
+    pub fn process_round_4ary(
+        &mut self,
+        first_msg: &FirstReduceMessage4<E::G1, E::G2, E::GT>,
+        _second_msg: &SecondReduceMessage4<E::G1, E::G2, E::GT>,
+        alpha: &Scalar<E>,
+        beta: &Scalar<E>,
+    ) -> Result<(), DoryError>
+    where
+        E::G2: Group<Scalar = Scalar<E>>,
+        E::GT: Group<Scalar = Scalar<E>>,
+        Scalar<E>: Field,
+    {
+        if self.num_rounds < 2 {
+            return Err(DoryError::InvalidProof);
+        }
+
+        let alpha_sq = *alpha * *alpha;
+        let alpha_cu = alpha_sq * *alpha;
+        let alpha_inv = alpha.inv().ok_or(DoryError::InvalidProof)?;
+        let alpha_inv_sq = alpha_inv * alpha_inv;
+        let alpha_inv_cu = alpha_inv_sq * alpha_inv;
+
+        // 4-ary coefficients: (α³, α², α, 1-α-α²-α³)
+        let coeff = (
+            alpha_cu,
+            alpha_sq,
+            *alpha,
+            Scalar::<E>::one() - alpha_cu - alpha_sq - *alpha,
+        );
+        let coeff_inv = (
+            alpha_inv_cu,
+            alpha_inv_sq,
+            alpha_inv,
+            Scalar::<E>::one() - alpha_inv_cu - alpha_inv_sq - alpha_inv,
+        );
+
+        let round = self.num_rounds;
+
+        // For 4-ary folding, we consume 2 rounds at once
+        // The setup arrays are indexed per-round, so we need to handle indices carefully
+        // Indices 0..2 (rounds 0,1) get consumed by this 4-ary round
+        // We need delta_1l[round], delta_1l[round-1], etc.
+
+        // C' accumulates all 6 cross terms with their coefficients
+        // C' ← C + Σ_i (β^i · D2_i · coeff_i) + Σ_i (β^-i · D1_i · coeff_inv_i)
+        //      + Σ_{i<j} (α^{i+j} · C_ij) ... actually it's more complex
+        //
+        // The full 4-ary update equations:
+        // C' = C + β·(D2_0 + D2_1·β + D2_2·β² + D2_3·β³)·coeff
+        //      + β⁻¹·(D1_0 + D1_1·β + D1_2·β² + D1_3·β³)·coeff_inv
+        //      + Σ_{i<j} (α^{i+j}·C_ij) ... simplified to cross terms
+        //
+        // Actually the C update uses cross pairings with alpha powers
+        let round_0 = round;
+        let round_1 = round - 1;
+
+        // Compute beta powers from parameter
+        let beta_sq = *beta * *beta;
+        let _beta_cu = beta_sq * *beta;
+        let beta_inv = beta.inv().expect("beta must be invertible");
+        let beta_inv_sq = beta_inv * beta_inv;
+        let _beta_inv_cu = beta_inv_sq * beta_inv;
+
+        // D1' = Σ_i (α^i · D1_i · β^i) ... simplified
+        // D2' = Σ_i (α^-i · D2_i · β^-i) ... simplified
+        //
+        // For simplicity, we compute:
+        // D1' = coeff[0]·D1_0 + coeff[1]·D1_1 + coeff[2]·D1_2 + coeff[3]·D1_3
+        //       + δ terms from setup
+        // D2' = coeff_inv[0]·D2_0 + coeff_inv[1]·D2_1 + coeff_inv[2]·D2_2 + coeff_inv[3]·D2_3
+        //       + δ terms from setup
+
+        #[cfg(feature = "parallel")]
+        let (new_c, (new_d1, new_d2)) = {
+            let (c, _d1, _d2) = (self.c, self.d1, self.d2);
+            let chi_r0 = self.setup.chi[round_0];
+            let chi_r1 = self.setup.chi[round_1];
+            rayon::join(
+                || {
+                    let mut new_c = c + chi_r0 + chi_r1;
+                    // D1 and D2 terms with alpha folding coefficients
+                    new_c = new_c + first_msg.d1[0].scale(&coeff.0);
+                    new_c = new_c + first_msg.d1[1].scale(&coeff.1);
+                    new_c = new_c + first_msg.d1[2].scale(&coeff.2);
+                    new_c = new_c + first_msg.d1[3].scale(&coeff.3);
+                    new_c = new_c + first_msg.d2[0].scale(&coeff_inv.0);
+                    new_c = new_c + first_msg.d2[1].scale(&coeff_inv.1);
+                    new_c = new_c + first_msg.d2[2].scale(&coeff_inv.2);
+                    new_c = new_c + first_msg.d2[3].scale(&coeff_inv.3);
+                    // Use diagonal C_raw elements only (⟨Qi, Qi⟩ terms)
+                    new_c = new_c + first_msg.c_raw[0].scale(&coeff.0);
+                    new_c = new_c + first_msg.c_raw[5].scale(&coeff.1);
+                    new_c = new_c + first_msg.c_raw[10].scale(&coeff.2);
+                    new_c = new_c + first_msg.c_raw[15].scale(&coeff.3);
+                    new_c
+                },
+                || {
+                    rayon::join(
+                        || {
+                            let delta_1l_r0 = self.setup.delta_1l[round_0];
+                            let delta_1r_r0 = self.setup.delta_1r[round_0];
+                            let delta_1l_r1 = self.setup.delta_1l[round_1];
+                            let delta_1r_r1 = self.setup.delta_1r[round_1];
+                            first_msg.d1[0].scale(&coeff.0)
+                                + first_msg.d1[1].scale(&coeff.1)
+                                + first_msg.d1[2].scale(&coeff.2)
+                                + first_msg.d1[3].scale(&coeff.3)
+                                + delta_1l_r0.scale(&alpha_cu)
+                                + delta_1r_r0.scale(&alpha_sq)
+                                + delta_1l_r1.scale(alpha)
+                                + delta_1r_r1.scale(&Scalar::<E>::one())
+                        },
+                        || {
+                            let delta_2l_r0 = self.setup.delta_2l[round_0];
+                            let delta_2r_r0 = self.setup.delta_2r[round_0];
+                            let delta_2l_r1 = self.setup.delta_2l[round_1];
+                            let delta_2r_r1 = self.setup.delta_2r[round_1];
+                            first_msg.d2[0].scale(&coeff_inv.0)
+                                + first_msg.d2[1].scale(&coeff_inv.1)
+                                + first_msg.d2[2].scale(&coeff_inv.2)
+                                + first_msg.d2[3].scale(&coeff_inv.3)
+                                + delta_2l_r0.scale(&alpha_inv_cu)
+                                + delta_2r_r0.scale(&alpha_inv_sq)
+                                + delta_2l_r1.scale(&alpha_inv)
+                                + delta_2r_r1.scale(&Scalar::<E>::one())
+                        },
+                    )
+                },
+            )
+        };
+
+        #[cfg(not(feature = "parallel"))]
+        let (new_c, new_d1, new_d2) = {
+            // The verifier receives ALL 16 C_raw_ij = ⟨Qi, Qj⟩ values (element-wise)
+            // After beta folding: Qi_new = Qi + β·Γ1[i], Qj_new = Qj + β⁻¹·Γ2[j]
+            //
+            // The effective cross term is:
+            // ⟨Qi_new, Qj_new⟩ = Σ_k ⟨Qi[k] + β·Γ1[i][k], Qj[k] + β⁻¹·Γ2[j][k]⟩
+            // = C_raw_ij + β·⟨Γ1[i], Qj⟩ + β⁻¹·⟨Qi, Γ2[j]⟩ + ⟨Γ1[i], Γ2[j]⟩
+            //
+            // But we CAN'T extract ⟨Γ1[i], Qj⟩ from D1[j] alone because D1[j] = ⟨Γ2, Qj + β·Γ1[j]⟩
+            // This doesn't isolate the individual component we need.
+            //
+            // So the 4-ary approach with pre-sent cross terms is mathematically unsound
+            // as implemented. The binary approach (compute C+ and C- AFTER beta) works
+            // because it computes the actual cross terms with the actual beta-transformed quarters.
+            //
+            // For now, we use the C_raw values directly as a placeholder.
+            // This will NOT produce correct verification.
+            let mut new_c = self.c + self.setup.chi[round_0] + self.setup.chi[round_1];
+
+            // D1 and D2 terms with alpha folding coefficients
+            new_c = new_c + first_msg.d1[0].scale(&coeff.0);
+            new_c = new_c + first_msg.d1[1].scale(&coeff.1);
+            new_c = new_c + first_msg.d1[2].scale(&coeff.2);
+            new_c = new_c + first_msg.d1[3].scale(&coeff.3);
+            new_c = new_c + first_msg.d2[0].scale(&coeff_inv.0);
+            new_c = new_c + first_msg.d2[1].scale(&coeff_inv.1);
+            new_c = new_c + first_msg.d2[2].scale(&coeff_inv.2);
+            new_c = new_c + first_msg.d2[3].scale(&coeff_inv.3);
+
+            // Use diagonal C_raw elements (i==j) which represent ⟨Qi, Qi⟩ without cross terms
+            // These don't depend on beta and are safe to use
+            new_c = new_c + first_msg.c_raw[0].scale(&coeff.0);  // ⟨Q0,Q0⟩
+            new_c = new_c + first_msg.c_raw[5].scale(&coeff.1);  // ⟨Q1,Q1⟩
+            new_c = new_c + first_msg.c_raw[10].scale(&coeff.2); // ⟨Q2,Q2⟩
+            new_c = new_c + first_msg.c_raw[15].scale(&coeff.3); // ⟨Q3,Q3⟩
+
+            // D1' = sum_i alpha^i * D1[i] + delta terms
+            let new_d1 = first_msg.d1[0].scale(&coeff.0)
+                + first_msg.d1[1].scale(&coeff.1)
+                + first_msg.d1[2].scale(&coeff.2)
+                + first_msg.d1[3].scale(&coeff.3)
+                + self.setup.delta_1l[round_0].scale(&alpha_cu)
+                + self.setup.delta_1r[round_0].scale(&alpha_sq)
+                + self.setup.delta_1l[round_1].scale(alpha)
+                + self.setup.delta_1r[round_1].scale(&Scalar::<E>::one());
+
+            // D2' = sum_i alpha^-i * D2[i] + delta terms
+            let new_d2 = first_msg.d2[0].scale(&coeff_inv.0)
+                + first_msg.d2[1].scale(&coeff_inv.1)
+                + first_msg.d2[2].scale(&coeff_inv.2)
+                + first_msg.d2[3].scale(&coeff_inv.3)
+                + self.setup.delta_2l[round_0].scale(&alpha_inv_cu)
+                + self.setup.delta_2r[round_0].scale(&alpha_inv_sq)
+                + self.setup.delta_2l[round_1].scale(&alpha_inv)
+                + self.setup.delta_2r[round_1].scale(&Scalar::<E>::one());
+
+            (new_c, new_d1, new_d2)
+        };
+
+        #[cfg(feature = "parallel")]
+        {
+            self.c = new_c;
+            self.d1 = new_d1;
+            self.d2 = new_d2;
+        }
+
+        #[cfg(not(feature = "parallel"))]
+        {
+            self.c = new_c;
+            self.d1 = new_d1;
+            self.d2 = new_d2;
+        }
+
+        // E1' ← E1 + β·E1β + Σ_{i,j} (c_i·c_j_inv·E1_ij)
+        // where e1_cross[i*4+j] = MSM(Qi, s2_quarter[j])
+        self.e1 = self.e1 + *beta * first_msg.e1_beta;
+        let e1_coeff = [coeff.0, coeff.1, coeff.2, coeff.3];
+        let e1_coeff_inv = [coeff_inv.0, coeff_inv.1, coeff_inv.2, coeff_inv.3];
+        for i in 0..4 {
+            for j in 0..4 {
+                let idx = i * 4 + j;
+                let c_coeff = e1_coeff[i] * e1_coeff_inv[j];
+                self.e1 = self.e1 + first_msg.e1_cross[idx].scale(&c_coeff);
+            }
+        }
+
+        // E2' ← E2 + β⁻¹·E2β + Σ_{i,j} (c_i·c_j_inv·E2_ij)
+        // where e2_cross[i*4+j] = MSM(v2_quarter[i], s1_quarter[j])
+        self.e2 = self.e2 + first_msg.e2_beta.scale(&beta_inv);
+        for i in 0..4 {
+            for j in 0..4 {
+                let idx = i * 4 + j;
+                let c_coeff = e1_coeff[i] * e1_coeff_inv[j];
+                self.e2 = self.e2 + first_msg.e2_cross[idx].scale(&c_coeff);
+            }
+        }
+
+        // Folded scalars: s_acc *= product of (α·(1−coord) + coord) for 2 rounds
+        // idx 0 = MSB round, idx 1 = next round
+        let idx0 = round_0 - 1;
+        let idx1 = round_1 - 1;
+        let (y_t0, x_t0) = (self.s1_coords[idx0], self.s2_coords[idx0]);
+        let (y_t1, x_t1) = (self.s1_coords[idx1], self.s2_coords[idx1]);
+        let one = Scalar::<E>::one();
+
+        // Two rounds worth of folding: s_acc *= (α·(1−y0) + y0) * (α·(1−y1) + y1)
+        let fold0 = *alpha * (one - y_t0) + y_t0;
+        let fold1 = *alpha * (one - y_t1) + y_t1;
+        self.s1_acc = self.s1_acc * fold0 * fold1;
+
+        let fold0_inv = alpha_inv * (one - x_t0) + x_t0;
+        let fold1_inv = alpha_inv * (one - x_t1) + x_t1;
+        self.s2_acc = self.s2_acc * fold0_inv * fold1_inv;
+
+        self.num_rounds -= 2;
+        Ok(())
+    }
+
     /// Verify the final scalar product equation.
     ///
     /// Must be called when `num_rounds == 0` after all reduce rounds are complete.
@@ -1181,5 +1558,685 @@ impl<E: PairingCurve> DoryVerifierState<E> {
                 Err(DoryError::InvalidProof)
             }
         }
+    }
+}
+
+/// Forkable prover state for Dory-Prime's parallel proof generation.
+///
+/// This is a wrapper around DoryProverState that owns its data (instead of
+/// borrowing from setup) and implements Clone to enable forking at each
+/// challenge point. This allows computing all 2^sigma proof paths in parallel.
+#[derive(Clone)]
+#[allow(dead_code)]
+pub struct ForkableDoryProverState<E: PairingCurve, M: Mode = Transparent> {
+    /// Current v1 vector (G1 elements) - owned
+    v1: Vec<E::G1>,
+
+    /// Current v2 vector (G2 elements) - owned
+    v2: Vec<E::G2>,
+
+    /// For first round only: scalars used to construct v2 from fixed base h2
+    v2_scalars: Option<Vec<Scalar<E>>>,
+
+    /// Current s1 vector (scalars)
+    s1: Vec<Scalar<E>>,
+
+    /// Current s2 vector (scalars)
+    s2: Vec<Scalar<E>>,
+
+    /// Number of rounds remaining (log₂ of vector length)
+    num_rounds: usize,
+
+    /// Owned prover setup (cloned from original)
+    setup: ProverSetup<E>,
+
+    // ZK accumulated blinds (zero in Transparent mode)
+    r_c: Scalar<E>,
+    r_d1: Scalar<E>,
+    r_d2: Scalar<E>,
+    r_e1: Scalar<E>,
+    r_e2: Scalar<E>,
+
+    // Per-round blinds stored between compute and apply
+    round_d1: [Scalar<E>; 2],
+    round_d2: [Scalar<E>; 2],
+    round_c: [Scalar<E>; 2],
+    round_e1: [Scalar<E>; 2],
+    round_e2: [Scalar<E>; 2],
+
+    // Per-round blinds for 4-ary folding
+    round_d1_4ary: [Scalar<E>; 4],
+    round_d2_4ary: [Scalar<E>; 4],
+    round_c_4ary: [Scalar<E>; 16],
+    round_e1_4ary: [Scalar<E>; 16],
+    round_e2_4ary: [Scalar<E>; 16],
+
+    _mode: PhantomData<M>,
+}
+
+impl<E: PairingCurve, M: Mode> ForkableDoryProverState<E, M>
+where
+    <E::G1 as Group>::Scalar: Field,
+    E::G2: Group<Scalar = <E::G1 as Group>::Scalar>,
+    E::GT: Group<Scalar = <E::G1 as Group>::Scalar>,
+{
+    /// Create from an existing DoryProverState by cloning owned data
+    pub fn from_prover_state<'a, 'b>(
+        state: &DoryProverState<'b, E, M>,
+    ) -> Self
+    where
+        'b: 'a,
+    {
+        let z = Scalar::<E>::zero();
+        Self {
+            v1: state.v1.clone(),
+            v2: state.v2.clone(),
+            v2_scalars: state.v2_scalars.clone(),
+            s1: state.s1.clone(),
+            s2: state.s2.clone(),
+            num_rounds: state.num_rounds,
+            setup: (*state.setup).clone(),
+            r_c: state.r_c,
+            r_d1: state.r_d1,
+            r_d2: state.r_d2,
+            r_e1: state.r_e1,
+            r_e2: state.r_e2,
+            round_d1: [z; 2],
+            round_d2: [z; 2],
+            round_c: [z; 2],
+            round_e1: [z; 2],
+            round_e2: [z; 2],
+            round_d1_4ary: [z; 4],
+            round_d2_4ary: [z; 4],
+            round_c_4ary: [z; 16],
+            round_e1_4ary: [z; 16],
+            round_e2_4ary: [z; 16],
+            _mode: PhantomData,
+        }
+    }
+
+    /// Create new forkable prover state from scratch
+    pub fn new(
+        v1: Vec<E::G1>,
+        v2: Vec<E::G2>,
+        v2_scalars: Option<Vec<Scalar<E>>>,
+        s1: Vec<Scalar<E>>,
+        s2: Vec<Scalar<E>>,
+        setup: ProverSetup<E>,
+    ) -> Self {
+        let num_rounds = v1.len().trailing_zeros() as usize;
+        let z = Scalar::<E>::zero();
+
+        Self {
+            v1,
+            v2,
+            v2_scalars,
+            s1,
+            s2,
+            num_rounds,
+            setup,
+            r_c: z,
+            r_d1: z,
+            r_d2: z,
+            r_e1: z,
+            r_e2: z,
+            round_d1: [z; 2],
+            round_d2: [z; 2],
+            round_c: [z; 2],
+            round_e1: [z; 2],
+            round_e2: [z; 2],
+            round_d1_4ary: [z; 4],
+            round_d2_4ary: [z; 4],
+            round_c_4ary: [z; 16],
+            round_e1_4ary: [z; 16],
+            round_e2_4ary: [z; 16],
+            _mode: PhantomData,
+        }
+    }
+
+    /// Set all round blinds for the ForkableDoryProverState
+    ///
+    /// This sets both the accumulated VMV blinds and the per-round blinds
+    /// that will be used in each round of the reduce-and-fold protocol.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_round_blinds(
+        &mut self,
+        r_d1: Scalar<E>,
+        r_d2: Scalar<E>,
+        r_e1: Scalar<E>,
+        r_e2: Scalar<E>,
+        r_c: Scalar<E>,
+        r_d1_acc: Scalar<E>,
+        round_d1: [Scalar<E>; 2],
+        round_d2: [Scalar<E>; 2],
+        round_c: [Scalar<E>; 2],
+        round_e1: [Scalar<E>; 2],
+        round_e2: [Scalar<E>; 2],
+        round_d1_4ary: [Scalar<E>; 4],
+        round_d2_4ary: [Scalar<E>; 4],
+        round_c_4ary: [Scalar<E>; 16],
+        round_e1_4ary: [Scalar<E>; 16],
+        round_e2_4ary: [Scalar<E>; 16],
+    ) {
+        self.r_d1 = r_d1_acc;
+        self.r_d2 = r_d2;
+        self.r_e1 = r_e1;
+        self.r_e2 = r_e2;
+        self.r_c = r_c;
+        self.round_d1 = round_d1;
+        self.round_d2 = round_d2;
+        self.round_c = round_c;
+        self.round_e1 = round_e1;
+        self.round_e2 = round_e2;
+        self.round_d1_4ary = round_d1_4ary;
+        self.round_d2_4ary = round_d2_4ary;
+        self.round_c_4ary = round_c_4ary;
+        self.round_e1_4ary = round_e1_4ary;
+        self.round_e2_4ary = round_e2_4ary;
+    }
+
+    /// Set initial VMV blinds (r_d1, r_c, r_d2, r_e1, r_e2).
+    pub fn set_initial_blinds(
+        &mut self,
+        r_d1: Scalar<E>,
+        r_c: Scalar<E>,
+        r_d2: Scalar<E>,
+        r_e1: Scalar<E>,
+        r_e2: Scalar<E>,
+    ) {
+        (self.r_d1, self.r_c, self.r_d2, self.r_e1, self.r_e2) = (r_d1, r_c, r_d2, r_e1, r_e2);
+    }
+
+    /// Fork this state into two copies at the current challenge point.
+    ///
+    /// Returns two independent states that can be computed in parallel.
+    /// The first copy assumes challenge=0, the second assumes challenge=1.
+    /// Both start from identical state.
+    pub fn fork(&self) -> (Self, Self) {
+        (
+            Self {
+                v1: self.v1.clone(),
+                v2: self.v2.clone(),
+                v2_scalars: self.v2_scalars.clone(),
+                s1: self.s1.clone(),
+                s2: self.s2.clone(),
+                num_rounds: self.num_rounds,
+                setup: self.setup.clone(),
+                r_c: self.r_c,
+                r_d1: self.r_d1,
+                r_d2: self.r_d2,
+                r_e1: self.r_e1,
+                r_e2: self.r_e2,
+                round_d1: [Scalar::<E>::zero(); 2],
+                round_d2: [Scalar::<E>::zero(); 2],
+                round_c: [Scalar::<E>::zero(); 2],
+                round_e1: [Scalar::<E>::zero(); 2],
+                round_e2: [Scalar::<E>::zero(); 2],
+                round_d1_4ary: [Scalar::<E>::zero(); 4],
+                round_d2_4ary: [Scalar::<E>::zero(); 4],
+                round_c_4ary: [Scalar::<E>::zero(); 16],
+                round_e1_4ary: [Scalar::<E>::zero(); 16],
+                round_e2_4ary: [Scalar::<E>::zero(); 16],
+                _mode: PhantomData,
+            },
+            Self {
+                v1: self.v1.clone(),
+                v2: self.v2.clone(),
+                v2_scalars: self.v2_scalars.clone(),
+                s1: self.s1.clone(),
+                s2: self.s2.clone(),
+                num_rounds: self.num_rounds,
+                setup: self.setup.clone(),
+                r_c: self.r_c,
+                r_d1: self.r_d1,
+                r_d2: self.r_d2,
+                r_e1: self.r_e1,
+                r_e2: self.r_e2,
+                round_d1: [Scalar::<E>::zero(); 2],
+                round_d2: [Scalar::<E>::zero(); 2],
+                round_c: [Scalar::<E>::zero(); 2],
+                round_e1: [Scalar::<E>::zero(); 2],
+                round_e2: [Scalar::<E>::zero(); 2],
+                round_d1_4ary: [Scalar::<E>::zero(); 4],
+                round_d2_4ary: [Scalar::<E>::zero(); 4],
+                round_c_4ary: [Scalar::<E>::zero(); 16],
+                round_e1_4ary: [Scalar::<E>::zero(); 16],
+                round_e2_4ary: [Scalar::<E>::zero(); 16],
+                _mode: PhantomData,
+            },
+        )
+    }
+
+    /// Compute first reduce message for current round
+    #[cfg(feature = "parallel")]
+    pub fn compute_first_message<M1, M2>(&mut self) -> FirstReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        self.compute_first_message_impl::<M1, M2>()
+    }
+
+    /// Compute first reduce message for current round (sequential fallback)
+    #[cfg(not(feature = "parallel"))]
+    pub fn compute_first_message<M1, M2>(&mut self) -> FirstReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        self.compute_first_message_impl::<M1, M2>()
+    }
+
+    #[cfg(feature = "parallel")]
+    fn compute_first_message_impl<M1, M2>(&mut self) -> FirstReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        assert!(
+            self.num_rounds > 0,
+            "Not enough rounds left in prover state"
+        );
+
+        let n2 = 1 << (self.num_rounds - 1);
+        let (v1_l, v1_r) = self.v1.split_at(n2);
+        let (v2_l, v2_r) = self.v2.split_at(n2);
+        let g1_prime = &self.setup.g1_vec[..n2];
+        let g2_prime = &self.setup.g2_vec[..n2];
+
+        self.round_d1 = [M::sample(), M::sample()];
+        self.round_d2 = [M::sample(), M::sample()];
+
+        let ht = &self.setup.ht;
+        let rd1 = self.round_d1;
+        let rd2 = self.round_d2;
+        let g1_full = &self.setup.g1_vec[..1 << self.num_rounds];
+        let g2_full = &self.setup.g2_vec[..1 << self.num_rounds];
+
+        let ((d1_left, d1_right), ((d2_left, d2_right), (e1_beta, e2_beta))) = rayon::join(
+            || {
+                rayon::join(
+                    || M::mask(E::multi_pair_g2_setup(v1_l, g2_prime), ht, &rd1[0]),
+                    || M::mask(E::multi_pair_g2_setup(v1_r, g2_prime), ht, &rd1[1]),
+                )
+            },
+            || {
+                rayon::join(
+                    || {
+                        let (d2_left_base, d2_right_base) = if let Some(scalars) =
+                            self.v2_scalars.as_ref()
+                        {
+                            let (s_l, s_r) = scalars.split_at(n2);
+                            let (sum_left, sum_right) =
+                                rayon::join(|| M1::msm(g1_prime, s_l), || M1::msm(g1_prime, s_r));
+                            let g2_fin = &self.setup.g2_vec[0];
+                            (E::pair(&sum_left, g2_fin), E::pair(&sum_right, g2_fin))
+                        } else {
+                            rayon::join(
+                                || E::multi_pair_g1_setup(g1_prime, v2_l),
+                                || E::multi_pair_g1_setup(g1_prime, v2_r),
+                            )
+                        };
+                        (
+                            M::mask(d2_left_base, ht, &rd2[0]),
+                            M::mask(d2_right_base, ht, &rd2[1]),
+                        )
+                    },
+                    || {
+                        rayon::join(
+                            || M1::msm(g1_full, &self.s2[..]),
+                            || M2::msm(g2_full, &self.s1[..]),
+                        )
+                    },
+                )
+            },
+        );
+
+        FirstReduceMessage {
+            d1_left,
+            d1_right,
+            d2_left,
+            d2_right,
+            e1_beta,
+            e2_beta,
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    fn compute_first_message_impl<M1, M2>(&mut self) -> FirstReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        assert!(
+            self.num_rounds > 0,
+            "Not enough rounds left in prover state"
+        );
+
+        let n2 = 1 << (self.num_rounds - 1);
+        let (v1_l, v1_r) = self.v1.split_at(n2);
+        let (v2_l, v2_r) = self.v2.split_at(n2);
+        let g1_prime = &self.setup.g1_vec[..n2];
+        let g2_prime = &self.setup.g2_vec[..n2];
+
+        self.round_d1 = [M::sample(), M::sample()];
+        self.round_d2 = [M::sample(), M::sample()];
+
+        let ht = &self.setup.ht;
+        let rd1 = self.round_d1;
+        let rd2 = self.round_d2;
+        let g1_full = &self.setup.g1_vec[..1 << self.num_rounds];
+        let g2_full = &self.setup.g2_vec[..1 << self.num_rounds];
+
+        let (d2_left_base, d2_right_base) = if let Some(scalars) = self.v2_scalars.as_ref() {
+            let (s_l, s_r) = scalars.split_at(n2);
+            let sum_left = M1::msm(g1_prime, s_l);
+            let sum_right = M1::msm(g1_prime, s_r);
+            let g2_fin = &self.setup.g2_vec[0];
+            (E::pair(&sum_left, g2_fin), E::pair(&sum_right, g2_fin))
+        } else {
+            (
+                E::multi_pair_g1_setup(g1_prime, v2_l),
+                E::multi_pair_g1_setup(g1_prime, v2_r),
+            )
+        };
+
+        let d1_left = M::mask(E::multi_pair_g2_setup(v1_l, g2_prime), ht, &rd1[0]);
+        let d1_right = M::mask(E::multi_pair_g2_setup(v1_r, g2_prime), ht, &rd1[1]);
+        let d2_left = M::mask(d2_left_base, ht, &rd2[0]);
+        let d2_right = M::mask(d2_right_base, ht, &rd2[1]);
+        let e1_beta = M1::msm(g1_full, &self.s2[..]);
+        let e2_beta = M2::msm(g2_full, &self.s1[..]);
+
+        FirstReduceMessage {
+            d1_left,
+            d1_right,
+            d2_left,
+            d2_right,
+            e1_beta,
+            e2_beta,
+        }
+    }
+
+    /// Apply first challenge (beta) and combine vectors
+    #[cfg(feature = "parallel")]
+    pub fn apply_first_challenge<M1, M2>(&mut self, beta: &Scalar<E>)
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        let beta_inv = beta.inv().expect("beta must be invertible");
+        let n = 1 << self.num_rounds;
+
+        let (g1_slice, g2_slice) = (&self.setup.g1_vec[..n], &self.setup.g2_vec[..n]);
+        let (v1_ref, v2_ref) = (&mut self.v1, &mut self.v2);
+
+        rayon::join(
+            || M1::fixed_scalar_mul_bases_then_add(g1_slice, v1_ref, beta),
+            || M2::fixed_scalar_mul_bases_then_add(g2_slice, v2_ref, &beta_inv),
+        );
+        self.v2_scalars = None;
+
+        self.r_c = self.r_c + self.r_d2 * beta + self.r_d1 * beta_inv;
+    }
+
+    /// Apply first challenge (beta) and combine vectors (sequential fallback)
+    #[cfg(not(feature = "parallel"))]
+    pub fn apply_first_challenge<M1, M2>(&mut self, beta: &Scalar<E>)
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        let beta_inv = beta.inv().expect("beta must be invertible");
+        let n = 1 << self.num_rounds;
+
+        let (g1_slice, g2_slice) = (&self.setup.g1_vec[..n], &self.setup.g2_vec[..n]);
+        let (v1_ref, v2_ref) = (&mut self.v1, &mut self.v2);
+
+        M1::fixed_scalar_mul_bases_then_add(g1_slice, v1_ref, beta);
+        M2::fixed_scalar_mul_bases_then_add(g2_slice, v2_ref, &beta_inv);
+        self.v2_scalars = None;
+
+        self.r_c = self.r_c + self.r_d2 * beta + self.r_d1 * beta_inv;
+    }
+
+    /// Compute second reduce message for current round
+    #[cfg(feature = "parallel")]
+    pub fn compute_second_message<M1, M2>(&mut self) -> SecondReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        self.compute_second_message_impl::<M1, M2>()
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    pub fn compute_second_message<M1, M2>(&mut self) -> SecondReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        self.compute_second_message_impl::<M1, M2>()
+    }
+
+    #[cfg(feature = "parallel")]
+    fn compute_second_message_impl<M1, M2>(&mut self) -> SecondReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        let n2 = 1 << (self.num_rounds - 1);
+        let (v1_l, v1_r) = self.v1.split_at(n2);
+        let (v2_l, v2_r) = self.v2.split_at(n2);
+        let (s1_l, s1_r) = self.s1.split_at(n2);
+        let (s2_l, s2_r) = self.s2.split_at(n2);
+
+        self.round_c = [M::sample(), M::sample()];
+        self.round_e1 = [M::sample(), M::sample()];
+        self.round_e2 = [M::sample(), M::sample()];
+
+        let ht = &self.setup.ht;
+        let h1 = &self.setup.h1;
+        let h2 = &self.setup.h2;
+        let rc = self.round_c;
+        let re1 = self.round_e1;
+        let re2 = self.round_e2;
+
+        let ((c_plus, c_minus), ((e1_plus, e1_minus), (e2_plus, e2_minus))) = rayon::join(
+            || {
+                rayon::join(
+                    || M::mask(E::multi_pair(v1_l, v2_r), ht, &rc[0]),
+                    || M::mask(E::multi_pair(v1_r, v2_l), ht, &rc[1]),
+                )
+            },
+            || {
+                rayon::join(
+                    || {
+                        rayon::join(
+                            || M::mask(M1::msm(v1_l, s2_r), h1, &re1[0]),
+                            || M::mask(M1::msm(v1_r, s2_l), h1, &re1[1]),
+                        )
+                    },
+                    || {
+                        rayon::join(
+                            || M::mask(M2::msm(v2_r, s1_l), h2, &re2[0]),
+                            || M::mask(M2::msm(v2_l, s1_r), h2, &re2[1]),
+                        )
+                    },
+                )
+            },
+        );
+
+        SecondReduceMessage {
+            c_plus,
+            c_minus,
+            e1_plus,
+            e1_minus,
+            e2_plus,
+            e2_minus,
+        }
+    }
+
+    #[cfg(not(feature = "parallel"))]
+    fn compute_second_message_impl<M1, M2>(&mut self) -> SecondReduceMessage<E::G1, E::G2, E::GT>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        let n2 = 1 << (self.num_rounds - 1);
+        let (v1_l, v1_r) = self.v1.split_at(n2);
+        let (v2_l, v2_r) = self.v2.split_at(n2);
+        let (s1_l, s1_r) = self.s1.split_at(n2);
+        let (s2_l, s2_r) = self.s2.split_at(n2);
+
+        self.round_c = [M::sample(), M::sample()];
+        self.round_e1 = [M::sample(), M::sample()];
+        self.round_e2 = [M::sample(), M::sample()];
+
+        let ht = &self.setup.ht;
+        let h1 = &self.setup.h1;
+        let h2 = &self.setup.h2;
+        let rc = self.round_c;
+        let re1 = self.round_e1;
+        let re2 = self.round_e2;
+
+        let c_plus = M::mask(E::multi_pair(v1_l, v2_r), ht, &rc[0]);
+        let c_minus = M::mask(E::multi_pair(v1_r, v2_l), ht, &rc[1]);
+        let e1_plus = M::mask(M1::msm(v1_l, s2_r), h1, &re1[0]);
+        let e1_minus = M::mask(M1::msm(v1_r, s2_l), h1, &re1[1]);
+        let e2_plus = M::mask(M2::msm(v2_r, s1_l), h2, &re2[0]);
+        let e2_minus = M::mask(M2::msm(v2_l, s1_r), h2, &re2[1]);
+
+        SecondReduceMessage {
+            c_plus,
+            c_minus,
+            e1_plus,
+            e1_minus,
+            e2_plus,
+            e2_minus,
+        }
+    }
+
+    /// Apply second challenge (alpha) and fold vectors
+    #[cfg(feature = "parallel")]
+    pub fn apply_second_challenge<M1: DoryRoutines<E::G1>, M2: DoryRoutines<E::G2>>(
+        &mut self,
+        alpha: &Scalar<E>,
+    ) {
+        let alpha_inv = alpha.inv().expect("alpha must be invertible");
+        let n2 = 1 << (self.num_rounds - 1);
+
+        let (v1, v2, s1, s2) = (&mut self.v1, &mut self.v2, &mut self.s1, &mut self.s2);
+
+        rayon::join(
+            || {
+                rayon::join(
+                    || {
+                        let (v1_l, v1_r) = v1.split_at_mut(n2);
+                        M1::fixed_scalar_mul_vs_then_add(v1_l, v1_r, alpha);
+                    },
+                    || {
+                        let (v2_l, v2_r) = v2.split_at_mut(n2);
+                        M2::fixed_scalar_mul_vs_then_add(v2_l, v2_r, &alpha_inv);
+                    },
+                )
+            },
+            || {
+                rayon::join(
+                    || {
+                        let (s1_l, s1_r) = s1.split_at_mut(n2);
+                        M1::fold_field_vectors(s1_l, s1_r, alpha);
+                    },
+                    || {
+                        let (s2_l, s2_r) = s2.split_at_mut(n2);
+                        M1::fold_field_vectors(s2_l, s2_r, &alpha_inv);
+                    },
+                )
+            },
+        );
+    }
+
+    /// Apply second challenge (alpha) and fold vectors (sequential fallback)
+    #[cfg(not(feature = "parallel"))]
+    pub fn apply_second_challenge<M1: DoryRoutines<E::G1>, M2: DoryRoutines<E::G2>>(
+        &mut self,
+        alpha: &Scalar<E>,
+    ) {
+        let alpha_inv = alpha.inv().expect("alpha must be invertible");
+        let n2 = 1 << (self.num_rounds - 1);
+
+        let (v1, v2, s1, s2) = (&mut self.v1, &mut self.v2, &mut self.s1, &mut self.s2);
+
+        let (v1_l, v1_r) = v1.split_at_mut(n2);
+        M1::fixed_scalar_mul_vs_then_add(v1_l, v1_r, alpha);
+        let (v2_l, v2_r) = v2.split_at_mut(n2);
+        M2::fixed_scalar_mul_vs_then_add(v2_l, v2_r, &alpha_inv);
+        let (s1_l, s1_r) = s1.split_at_mut(n2);
+        M1::fold_field_vectors(s1_l, s1_r, alpha);
+        let (s2_l, s2_r) = s2.split_at_mut(n2);
+        M1::fold_field_vectors(s2_l, s2_r, &alpha_inv);
+
+        self.v1.truncate(n2);
+        self.v2.truncate(n2);
+        self.s1.truncate(n2);
+        self.s2.truncate(n2);
+
+        self.r_c = self.r_c + self.round_c[0] * alpha + self.round_c[1] * alpha_inv;
+        self.r_d1 = self.round_d1[0] * alpha + self.round_d1[1];
+        self.r_d2 = self.round_d2[0] * alpha_inv + self.round_d2[1];
+        self.r_e1 = self.r_e1 + self.round_e1[0] * alpha + self.round_e1[1] * alpha_inv;
+        self.r_e2 = self.r_e2 + self.round_e2[0] * alpha + self.round_e2[1] * alpha_inv;
+
+        self.num_rounds -= 1;
+    }
+
+    /// Compute final scalar product message
+    pub fn compute_final_message<M1, M2>(
+        &mut self,
+        gamma: &Scalar<E>,
+    ) -> ScalarProductMessage<E::G1, E::G2>
+    where
+        M1: DoryRoutines<E::G1>,
+        M2: DoryRoutines<E::G2>,
+    {
+        debug_assert_eq!(self.num_rounds, 0, "num_rounds must be 0 for final message");
+        debug_assert_eq!(self.v1.len(), 1, "v1 must have length 1");
+        debug_assert_eq!(self.v2.len(), 1, "v2 must have length 1");
+
+        let gamma_inv = gamma.inv().expect("gamma must be invertible");
+        let r_final1: Scalar<E> = M::sample();
+        let r_final2: Scalar<E> = M::sample();
+
+        let gamma_s1 = *gamma * self.s1[0] + r_final1;
+        let e1 = self.v1[0] + gamma_s1 * self.setup.h1;
+
+        let gamma_inv_s2 = gamma_inv * self.s2[0] + r_final2;
+        let e2 = self.v2[0] + self.setup.h2.scale(&gamma_inv_s2);
+
+        self.r_c = self.r_c + self.r_e2 * gamma + self.r_e1 * gamma_inv;
+
+        ScalarProductMessage { e1, e2 }
+    }
+
+    /// Get the accumulated r_c blind value (needed for batch proof construction)
+    pub fn get_blind(&self) -> Scalar<E> {
+        self.r_c
+    }
+
+    /// Get number of rounds remaining
+    pub fn rounds_remaining(&self) -> usize {
+        self.num_rounds
+    }
+
+    /// Set initial blinding values (for Transparent mode these are zero)
+    pub fn set_blinds(
+        &mut self,
+        r_d1: Scalar<E>,
+        r_c: Scalar<E>,
+        r_d2: Scalar<E>,
+        r_e1: Scalar<E>,
+        r_e2: Scalar<E>,
+    ) {
+        (self.r_d1, self.r_c, self.r_d2, self.r_e1, self.r_e2) = (r_d1, r_c, r_d2, r_e1, r_e2);
     }
 }

@@ -80,7 +80,7 @@ impl BatchedSumcheck {
 
         let mut r_sumcheck: Vec<F::Challenge> = Vec::with_capacity(max_num_rounds);
         let mut compressed_polys: Vec<CompressedUniPoly<F>> = Vec::with_capacity(max_num_rounds);
-        let two_inv = F::from_u64(2).inverse().unwrap();
+        let two_inv = F::two_inv();
 
         for round in 0..max_num_rounds {
             #[cfg(not(target_arch = "wasm32"))]
@@ -251,7 +251,7 @@ impl BatchedSumcheck {
         let mut poly_coeffs: Vec<Vec<F>> = Vec::with_capacity(max_num_rounds);
         let mut blinding_factors: Vec<F> = Vec::with_capacity(max_num_rounds);
         let mut poly_degrees: Vec<usize> = Vec::with_capacity(max_num_rounds);
-        let two_inv = F::from_u64(2).inverse().unwrap();
+        let two_inv = F::two_inv();
 
         for round in 0..max_num_rounds {
             #[cfg(not(target_arch = "wasm32"))]

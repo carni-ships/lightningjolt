@@ -326,8 +326,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for AdviceClaimReductionParams<F> {
                 } else {
                     self.cycle_phase_row_rounds.start - self.cycle_phase_col_rounds.end
                 };
-                let two_inv = F::from_u64(2).inverse().unwrap();
-                let scale = (0..gap_len).fold(F::one(), |acc, _| acc * two_inv);
+                let scale = (0..gap_len).fold(F::one(), |acc, _| acc * F::two_inv());
 
                 vec![eq_eval * scale]
             }
@@ -461,7 +460,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for AdviceClaimRe
         {
             // Current sumcheck variable does not appear in advice polynomial, so we
             // can simply send a constant polynomial equal to the previous claim divided by 2
-            UniPoly::from_coeff(vec![previous_claim * F::from_u64(2).inverse().unwrap()])
+            UniPoly::from_coeff(vec![previous_claim * F::two_inv()])
         } else {
             // Account for (1) internal dummy rounds already traversed and
             // (2) trailing dummy rounds after this instance's active window in the batched sumcheck.
@@ -489,7 +488,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for AdviceClaimRe
                 {
                     // Each dummy internal round halves the running claim; equivalently, we multiply the
                     // scaling factor by 1/2.
-                    self.scale *= F::from_u64(2).inverse().unwrap();
+                    self.scale *= F::two_inv();
                 } else {
                     self.advice_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
                     self.eq_poly.bind_parallel(r_j, BindingOrder::LowToHigh);
@@ -633,8 +632,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T>
                 } else {
                     params.cycle_phase_row_rounds.start - params.cycle_phase_col_rounds.end
                 };
-                let two_inv = F::from_u64(2).inverse().unwrap();
-                let scale = (0..gap_len).fold(F::one(), |acc, _| acc * two_inv);
+                let scale = (0..gap_len).fold(F::one(), |acc, _| acc * F::two_inv());
 
                 // Account for Phase 1's internal dummy-gap traversal via constant scaling.
                 advice_claim * eq_eval * scale

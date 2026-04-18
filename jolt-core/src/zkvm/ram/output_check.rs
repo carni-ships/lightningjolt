@@ -272,13 +272,11 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceProver<F, T> for OutputSumchec
     #[tracing::instrument(skip_all, name = "OutputSumcheckProver::compute_message")]
     fn compute_message(&mut self, round: usize, previous_claim: F) -> UniPoly<F> {
         if self.params.is_internal_cycle_gap_round(round) {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            return UniPoly::from_coeff(vec![previous_claim * two_inv]);
+            return UniPoly::from_coeff(vec![previous_claim * F::two_inv()]);
         }
 
         if round < self.num_zero_address_vars {
-            let two_inv = F::from_u64(2).inverse().unwrap();
-            return UniPoly::from_coeff(vec![previous_claim * two_inv]);
+            return UniPoly::from_coeff(vec![previous_claim * F::two_inv()]);
         }
 
         let Self {

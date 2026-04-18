@@ -188,3 +188,47 @@ where
         self.total_items
     }
 }
+
+/// Configuration for compressed trace writing
+#[derive(Debug, Clone)]
+pub struct CompressedTraceWriterConfig {
+    /// Base trace writer configuration
+    pub base_config: TraceWriterConfig,
+    /// Enable zstd compression (significantly better than postcard alone)
+    pub enable_zstd: bool,
+    /// Compression level for zstd (1-22, higher = better compression, slower)
+    pub compression_level: i32,
+}
+
+impl Default for CompressedTraceWriterConfig {
+    fn default() -> Self {
+        Self {
+            base_config: TraceWriterConfig::default(),
+            enable_zstd: true,
+            compression_level: 10, // Good balance of speed and compression
+        }
+    }
+}
+
+/// Statistics about the compressed write operation
+#[derive(Debug, Clone, Default)]
+pub struct CompressedWriteStats {
+    pub total_cycles: usize,
+    pub uncompressed_bytes: usize,
+    pub compressed_bytes: usize,
+    pub write_time_ms: u128,
+}
+
+impl CompressedWriteStats {
+    pub fn compression_ratio(&self) -> f64 {
+        if self.uncompressed_bytes > 0 {
+            self.compressed_bytes as f64 / self.uncompressed_bytes as f64
+        } else {
+            1.0
+        }
+    }
+
+    pub fn space_saved_percent(&self) -> f64 {
+        (1.0 - self.compression_ratio()) * 100.0
+    }
+}

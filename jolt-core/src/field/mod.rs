@@ -226,6 +226,14 @@ pub trait JoltField:
     fn square(&self) -> Self;
     fn from_bytes(bytes: &[u8]) -> Self;
     fn inverse(&self) -> Option<Self>;
+
+    /// Returns 1/2 as a field element (precomputed constant).
+    /// This avoids repeated inversions which are expensive.
+    fn two_inv() -> Self;
+
+    /// Returns 1/6 as a field element (precomputed constant).
+    fn six_inv() -> Self;
+
     fn to_u64(&self) -> Option<u64> {
         unimplemented!("conversion to u64 not implemented");
     }

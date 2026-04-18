@@ -3614,6 +3614,7 @@ dependencies = [
  "tracing",
  "tracing-chrome",
  "tracing-subscriber",
+ "zkmetal",
 ]
 
 [[package]]
@@ -8628,6 +8629,20 @@ dependencies = [
  "regex",
  "strum 0.28.0",
  "tracer",
+]
+
+[[package]]
+name = "zkmetal"
+version = "0.1.0"
+dependencies = [
+ "zkmetal-sys",
+]
+
+[[package]]
+name = "zkmetal-sys"
+version = "0.1.0"
+dependencies = [
+ "cc",
 ]
 
 [[package]]

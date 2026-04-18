@@ -636,7 +636,7 @@ mod tests {
         // grid {-1,0,1}: L0(r)=r(r-1)/2, L1(r)=1-r^2, L2(r)=r(r+1)/2
         const N: usize = 3;
         let nodes = grid_nodes::<N>();
-        let two_inv = F::from_u64(2).inverse().unwrap();
+        let two_inv = F::two_inv();
         for k in 0..7u64 {
             let r = F::from_u64(k) - F::from_u64(1); // covers negatives around nodes
             let [l0, l1, l2] = LagrangePolynomial::<F>::evals::<F, N>(&r);

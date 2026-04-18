@@ -1,3 +1,4 @@
+pub mod compressed_trace;
 pub mod inline_helpers;
 pub mod inline_sequence_writer;
 #[cfg(any(feature = "test-utils", test))]

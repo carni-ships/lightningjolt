@@ -70,33 +70,41 @@ impl<T: SmallScalar, F: JoltField> CompactPolynomial<T, F> {
     }
 
     fn evaluate_split_eq_parallel(&self, eq_one: &[F], eq_two: &[F]) -> F {
+        // Optimized: restructure to improve cache locality
+        // The key insight is that self.coeffs is accessed in contiguous chunks during inner dot products
+        let eq_two_len = eq_two.len();
         let eval: F = (0..eq_one.len())
             .into_par_iter()
             .map(|x1| {
-                let partial_sum = (0..eq_two.len())
+                let coeff_base = x1 * eq_two_len;
+                let eq1_val = eq_one[x1];
+                // Inner loop accesses consecutive memory: self.coeffs[coeff_base..coeff_base+eq_two_len]
+                let partial_sum = (0..eq_two_len)
                     .into_par_iter()
                     .map(|x2| {
-                        let idx = x1 * eq_two.len() + x2;
-                        // field_mul now already checks for 0 and 1 optimisation
-                        // via Jolfield mul_64 method
+                        let idx = coeff_base + x2;
                         self.coeffs[idx].field_mul(eq_two[x2])
                     })
                     .reduce(|| F::zero(), |acc, val| acc + val);
-                OptimizedMul::mul_01_optimized(partial_sum, eq_one[x1])
+                OptimizedMul::mul_01_optimized(partial_sum, eq1_val)
             })
             .reduce(|| F::zero(), |acc, val| acc + val);
         eval
     }
     fn evaluate_split_eq_serial(&self, eq_one: &[F], eq_two: &[F]) -> F {
+        // Same structure as parallel version for correctness
+        let eq_two_len = eq_two.len();
         let eval: F = (0..eq_one.len())
             .map(|x1| {
-                let partial_sum = (0..eq_two.len())
+                let coeff_base = x1 * eq_two_len;
+                let eq1_val = eq_one[x1];
+                let partial_sum = (0..eq_two_len)
                     .map(|x2| {
-                        let idx = x1 * eq_two.len() + x2;
+                        let idx = coeff_base + x2;
                         self.coeffs[idx].field_mul(eq_two[x2])
                     })
                     .fold(F::zero(), |acc, val| acc + val);
-                OptimizedMul::mul_01_optimized(partial_sum, eq_one[x1])
+                OptimizedMul::mul_01_optimized(partial_sum, eq1_val)
             })
             .fold(F::zero(), |acc, val| acc + val);
         eval

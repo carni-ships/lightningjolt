@@ -70,7 +70,7 @@ impl<F: JoltField> UniPoly<F> {
 
     /// Direct interpolation for degree 2 polynomial from evals at 0, 1, 2.
     fn from_evals_degree2(e0: F, e1: F, e2: F) -> Self {
-        let two_inv = F::from_u64(2).inverse().unwrap();
+        let two_inv = F::two_inv();
         let c0 = e0;
         let c2 = (e0 - e1 - e1 + e2) * two_inv;
         let c1 = e1 - e0 - c2;
@@ -81,8 +81,8 @@ impl<F: JoltField> UniPoly<F> {
 
     /// Direct interpolation for degree 3 polynomial from evals at 0, 1, 2, 3.
     fn from_evals_degree3(e0: F, e1: F, e2: F, e3: F) -> Self {
-        let two_inv = F::from_u64(2).inverse().unwrap();
-        let six_inv = F::from_u64(6).inverse().unwrap();
+        let two_inv = F::two_inv();
+        let six_inv = F::six_inv();
         let c0 = e0;
         let c3 = (e3 - e0 + (e1 - e2) * F::from_u64(3)) * six_inv;
         let c2 = (e0 - e1 - e1 + e2) * two_inv - c3 - c3 - c3;
@@ -105,7 +105,7 @@ impl<F: JoltField> UniPoly<F> {
             4 => {
                 // Degree 3: f(0), f(1), f(2), f(∞)
                 let (e0, e1, e2, e_inf) = (evals[0], evals[1], evals[2], evals[3]);
-                let inv2 = F::from_u64(2).inverse().unwrap();
+                let inv2 = F::two_inv();
                 let e_inf_6 = e_inf + e_inf + e_inf + e_inf + e_inf + e_inf;
                 let c2 = (e2 + e0 - e1 - e1 - e_inf_6) * inv2;
                 let c1 = e1 - e0 - e_inf - c2;

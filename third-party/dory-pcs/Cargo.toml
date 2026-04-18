@@ -80,6 +80,7 @@ parallel = [
 ]
 zk = []
 dory-prime = ["arkworks"]
+lattice = ["arkworks"]
 
 [lib]
 name = "dory_pcs"

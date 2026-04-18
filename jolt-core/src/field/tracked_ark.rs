@@ -321,6 +321,14 @@ impl JoltField for TrackedFr {
     const MONTGOMERY_R: Self = TrackedFr(<ark_bn254::Fr as JoltField>::MONTGOMERY_R);
     const MONTGOMERY_R_SQUARE: Self = TrackedFr(<ark_bn254::Fr as JoltField>::MONTGOMERY_R_SQUARE);
 
+    fn two_inv() -> Self {
+        TrackedFr(<ark_bn254::Fr as JoltField>::two_inv())
+    }
+
+    fn six_inv() -> Self {
+        TrackedFr(<ark_bn254::Fr as JoltField>::six_inv())
+    }
+
     type UnreducedElem = <ark_bn254::Fr as JoltField>::UnreducedElem;
     type UnreducedMulU64 = <ark_bn254::Fr as JoltField>::UnreducedMulU64;
     type UnreducedMulU128 = <ark_bn254::Fr as JoltField>::UnreducedMulU128;

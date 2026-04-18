@@ -222,7 +222,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for InstructionReadRafSumcheckParam
 
     #[cfg(feature = "zk")]
     fn input_constraint_challenge_values(&self, _: &dyn OpeningAccumulator<F>) -> Vec<F> {
-        let half = F::from_u64(2).inverse().unwrap();
+        let half = F::two_inv();
         vec![half, self.gamma, self.gamma_sqr]
     }
 

@@ -251,17 +251,23 @@ impl<F: JoltField> DensePolynomial<F> {
         }
     }
     fn evaluate_split_eq_parallel(&self, eq_one: &[F], eq_two: &[F]) -> F {
+        // Optimized: restructure to improve cache locality
+        // The key insight is that self.Z is accessed in contiguous chunks during inner dot products
+        let eq_two_len = eq_two.len();
         let eval: F = (0..eq_one.len())
             .into_par_iter()
             .map(|x1| {
-                let partial_sum = (0..eq_two.len())
+                let coeff_base = x1 * eq_two_len;
+                let eq1_val = eq_one[x1];
+                // Inner loop accesses consecutive memory: self.Z[coeff_base..coeff_base+eq_two_len]
+                let partial_sum = (0..eq_two_len)
                     .into_par_iter()
                     .map(|x2| {
-                        let idx = x1 * eq_two.len() + x2;
+                        let idx = coeff_base + x2;
                         OptimizedMul::mul_01_optimized(eq_two[x2], self.Z[idx])
                     })
                     .reduce(|| F::zero(), |acc, val| acc + val);
-                OptimizedMul::mul_01_optimized(eq_one[x1], partial_sum)
+                OptimizedMul::mul_01_optimized(eq1_val, partial_sum)
             })
             .reduce(|| F::zero(), |acc, val| acc + val);
         eval
@@ -322,6 +328,8 @@ impl<F: JoltField> DensePolynomial<F> {
             // and i is reversed
             // r[m-1-i] actually starts at the big endian digit
             // and moves towards the little endian digit.
+            let r_val = r[m - 1 - i];
+
             for j in 0..stride {
                 let f0 = current[j];
                 let f1 = current[j + stride];
@@ -329,9 +337,9 @@ impl<F: JoltField> DensePolynomial<F> {
                 if slope.is_zero() {
                     current[j] = f0;
                 } else if slope.is_one() {
-                    current[j] = f0 + r[m - 1 - i];
+                    current[j] = f0 + r_val;
                 } else {
-                    current[j] = f0 + r[m - 1 - i] * slope;
+                    current[j] = f0 + r_val * slope;
                 }
             }
             // No benefit to truncating really.

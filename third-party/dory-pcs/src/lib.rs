@@ -101,18 +101,29 @@ pub mod mode;
 pub mod primitives;
 pub mod proof;
 pub mod reduce_and_fold;
+#[cfg(feature = "lattice")]
+pub mod reduce_and_fold_lattice;
 pub mod setup;
 
-#[cfg(feature = "arkworks")]
-pub mod backends;
+/// Batch proof generation utilities for combining multiple proofs efficiently
+pub mod batch;
 
-#[cfg(feature = "dory-prime")]
+/// Dory-Prime: parallelizable proof generation via challenge tree
+///
+/// This module provides an alternative proof generation algorithm that computes
+/// all 2^sigma possible challenge paths in parallel, enabling faster prover
+/// time through parallel computation.
+#[cfg(any(feature = "parallel", feature = "dory-prime"))]
 pub mod dory_prime;
+
+#[cfg(any(feature = "arkworks", feature = "lattice"))]
+pub mod backends;
 
 pub use error::DoryError;
 pub use evaluation_proof::create_evaluation_proof;
 pub use messages::{
-    FirstReduceMessage, ScalarProductMessage, ScalarProductProof, SecondReduceMessage, VMVMessage,
+    FirstReduceMessage, FirstReduceMessage4, ScalarProductMessage, ScalarProductProof,
+    SecondReduceMessage, SecondReduceMessage4, VMVMessage,
 };
 #[cfg(feature = "zk")]
 pub use messages::{Sigma1Proof, Sigma2Proof};
@@ -122,8 +133,8 @@ pub use mode::{Mode, Transparent};
 use primitives::arithmetic::{DoryRoutines, Field, Group, PairingCurve};
 pub use primitives::poly::{MultilinearLagrange, Polynomial};
 use primitives::serialization::{DoryDeserialize, DorySerialize};
-pub use proof::DoryProof;
-pub use reduce_and_fold::{DoryProverState, DoryVerifierState};
+pub use proof::{DoryProof, DoryProof4ary};
+pub use reduce_and_fold::{DoryProverState, DoryVerifierState, ForkableDoryProverState};
 pub use setup::{ProverSetup, VerifierSetup};
 
 /// Dory Fiat-Shamir challenges and coordinates extracted during verification.

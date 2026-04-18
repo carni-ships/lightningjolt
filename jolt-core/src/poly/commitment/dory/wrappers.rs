@@ -337,6 +337,14 @@ pub struct JoltToDoryTranscript<'a, T: Transcript> {
     transcript: Option<&'a mut T>,
 }
 
+impl<'a, T: Transcript + Clone> Clone for JoltToDoryTranscript<'a, T> {
+    fn clone(&self) -> Self {
+        // We can't really clone the reference, so we just create a new instance
+        // The transcript field will be None after clone, which is fine for forking
+        Self { transcript: None }
+    }
+}
+
 impl<'a, T: Transcript> JoltToDoryTranscript<'a, T> {
     pub fn new(transcript: &'a mut T) -> Self {
         Self {

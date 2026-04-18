@@ -490,7 +490,7 @@ impl DoryGlobals {
         Self::configure_test_cache_root();
 
         THREAD_STATE.with(|state| {
-            *state.borrow_mut() = DoryThreadState::default();
+            *state.borrow_mut() = DoryThreadState::new();
         });
     }
 

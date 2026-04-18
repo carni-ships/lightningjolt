@@ -39,11 +39,15 @@ prover = [
     "dory/backends",
     "dory/cache", # This includes `parallel` feature
     "dory/disk-persistence",
+    # "parallel-sumcheck",  # Disabled by default - adds overhead for small proofs
 ]
+# Enables parallelization of sumcheck stage initialization.
+# Can be disabled to reduce binary size or for platforms without threading support.
+parallel-sumcheck = ["dep:rayon"]
 dory-prime = ["dory/dory-prime"]
 # For cross-compilation to zkVM targets (SP1) that provide their own platform runtime.
 # Enables tracer/std for compilation but skips jolt-platform's getrandom/sys_rand symbols.
-sp1-guest = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "rayon", "tracer/std"]
+sp1-guest = ["ark-ec/std", "ark-ff/std", "ark-std/std", "ark-ff/asm", "dep:rayon", "tracer/std"]
 # This is for building jolt-core without prover capabilities, e.g. for recursion
 # jolt-core needs std and rayon to compile, so these are the minimal set of features.
 minimal = ["sp1-guest", "tracer/platform-random"]
@@ -55,6 +59,8 @@ challenge-254-bit = []
 icicle = ["dep:icicle-runtime", "dep:icicle-core", "dep:icicle-bn254"]
 icicle-metal = ["icicle", "icicle-runtime/metal_backend", "icicle-bn254/metal_backend"]
 metal-pairing = ["dep:metal"]
+lattice = ["dory/lattice"]
+zkmetal = ["lattice", "dep:zkmetal"]
 
 [dependencies]
 ark-bn254.workspace = true
@@ -107,6 +113,7 @@ pprof = { version = "0.15", features = [
 ], optional = true }
 prost = { version = "0.14", optional = true }
 metal = { version = "0.33", optional = true }
+zkmetal = { version = "0.1", git = "https://github.com/carni-ships/zkmetal", optional = true }
 
 [package.metadata.cargo-machete]
 ignored = ["prost"]

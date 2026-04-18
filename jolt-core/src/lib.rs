@@ -16,6 +16,7 @@ pub mod curve;
 pub mod field;
 pub mod guest;
 pub mod msm;
+pub mod msm_precompute;
 pub mod poly;
 pub mod subprotocols;
 pub mod transcripts;

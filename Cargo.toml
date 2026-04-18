@@ -159,6 +159,10 @@ ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist
 ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
 allocative = { git = "https://github.com/facebookexperimental/allocative", rev = "85b773d85d526d068ce94724ff7a7b81203fc95e" }
 
+[patch."https://github.com/carni-ships/zkmetal"]
+zkmetal = { path = "../zkMetal/bindings/rust/zkmetal" }
+zkmetal-sys = { path = "../zkMetal/bindings/rust/zkmetal-sys" }
+
 [workspace.metadata.cargo-machete]
 ignored = ["jolt-sdk"]
 

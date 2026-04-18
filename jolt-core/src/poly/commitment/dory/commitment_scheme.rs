@@ -1,6 +1,6 @@
 //! Dory polynomial commitment scheme implementation
 
-use super::dory_globals::{DoryGlobals, DoryLayout};
+use super::dory_globals::{DoryContext, DoryGlobals, DoryLayout};
 use super::jolt_dory_routines::{JoltG1Routines, JoltG2Routines};
 use super::wrappers::{
     ark_to_jolt, jolt_to_ark, ArkDoryProof, ArkFr, ArkG1, ArkG2, ArkGT, ArkworksProverSetup,
@@ -172,12 +172,27 @@ impl CommitmentScheme for DoryCommitmentScheme {
     {
         let _span = trace_span!("DoryCommitmentScheme::batch_commit").entered();
 
-        // Use sequential iteration instead of par_iter() because commit() reads from
-        // thread-local DoryGlobals which aren't accessible on rayon worker threads.
-        // TODO: Thread sigma/nu through call chain to enable true parallelization
+        // Get sigma/nu from DoryGlobals once for all polynomials
+        // This enables parallelization since we pass these as parameters
+        let num_cols = DoryGlobals::get_num_columns();
+        let num_rows = DoryGlobals::get_max_num_rows();
+        let sigma = num_cols.log_2();
+        let nu = num_rows.log_2();
+
+        // Enable parallel batch commit by threading sigma/nu through
+        // Each thread initializes its own DoryGlobals context with the same parameters
         polys
-            .iter()
-            .map(|poly| Self::commit(poly.borrow(), gens))
+            .par_iter()
+            .map(|poly| {
+                // Initialize thread-local DoryGlobals context for this thread
+                let _guard = DoryGlobals::initialize_context(
+                    sigma, // Use same sigma for all threads
+                    1 << nu, // Use same number of rows
+                    DoryContext::Main,
+                    Some(DoryGlobals::get_layout()),
+                );
+                Self::commit(poly.borrow(), gens)
+            })
             .collect()
     }
 

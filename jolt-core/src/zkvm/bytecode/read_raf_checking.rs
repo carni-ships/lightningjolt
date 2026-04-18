@@ -1658,7 +1658,7 @@ impl<F: JoltField> SumcheckInstanceParams<F> for BytecodeReadRafSumcheckParams<F
         challenges.push(self.gamma_powers[2] * self.stage3_gammas[0]); // imm
                                                                        // unexpanded_pc: split between SpartanShift and InstructionInputVirtualization
                                                                        // Each gets half the coefficient
-        let half = F::from_u64(2).inverse().unwrap();
+        let half = F::two_inv();
         challenges.push(self.gamma_powers[2] * self.stage3_gammas[1] * half);
         // Continue with the rest of stage3 (indices 2..9)
         for g in &self.stage3_gammas[2..] {

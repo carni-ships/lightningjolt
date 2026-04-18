@@ -1,4 +1,5 @@
 use super::{FieldOps, JoltField, UnreducedInteger};
+use std::sync::OnceLock;
 #[cfg(feature = "challenge-254-bit")]
 use crate::field::challenge::Mont254BitChallenge;
 #[cfg(not(feature = "challenge-254-bit"))]
@@ -31,6 +32,18 @@ impl JoltField for ark_bn254::Fr {
         use ark_ff::MontConfig;
         std::mem::transmute(<ark_bn254::FrConfig as MontConfig<4>>::R2)
     };
+
+    // Precomputed common field constants (computed once on first access)
+    fn two_inv() -> Self {
+        static TWO_INV: OnceLock<ark_bn254::Fr> = OnceLock::new();
+        *TWO_INV.get_or_init(|| ark_ff::Field::inverse(&ark_bn254::Fr::from(2u64)).unwrap())
+    }
+
+    /// Returns 1/6 as a field element (precomputed constant).
+    fn six_inv() -> Self {
+        static SIX_INV: OnceLock<ark_bn254::Fr> = OnceLock::new();
+        *SIX_INV.get_or_init(|| ark_ff::Field::inverse(&ark_bn254::Fr::from(6u64)).unwrap())
+    }
 
     type UnreducedElem = BigInt<4>;
     type UnreducedMulU64 = Folded256MulU64;

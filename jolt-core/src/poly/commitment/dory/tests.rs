@@ -8,6 +8,7 @@ mod tests {
     use crate::poly::dense_mlpoly::DensePolynomial;
     use crate::poly::multilinear_polynomial::{MultilinearPolynomial, PolynomialEvaluation};
     use crate::transcripts::{Blake2bTranscript, Transcript};
+    use crate::utils::math::Math;
     use ark_ff::biginteger::S128;
     use ark_std::rand::{thread_rng, Rng};
     use ark_std::{UniformRand, Zero};
@@ -36,12 +37,16 @@ mod tests {
 
         let mut prove_transcript = Blake2bTranscript::new(b"dory_test");
         bind_opening_inputs::<Fr, _>(&mut prove_transcript, &opening_point, &evaluation);
+        let sigma = DoryGlobals::get_num_columns().log_2();
+        let nu = DoryGlobals::get_max_num_rows().log_2();
         let (proof, _y_blinding) = DoryCommitmentScheme::prove(
             prover_setup,
             &poly,
             &opening_point,
             Some(row_commitments),
             &mut prove_transcript,
+            sigma,
+            nu,
         );
 
         let mut verify_transcript = Blake2bTranscript::new(b"dory_test");
@@ -270,6 +275,8 @@ mod tests {
             &opening_point,
             Some(row_commitments),
             &mut prove_transcript,
+            5,
+            5,
         );
 
         // Test 1: Tamper with the evaluation
@@ -489,6 +496,8 @@ mod tests {
             &opening_point,
             Some(row_commitments),
             &mut prove_transcript,
+            5,
+            5,
         );
 
         let mut verify_transcript = Blake2bTranscript::new(b"dory_test");
@@ -546,7 +555,8 @@ mod tests {
 
         // Step 4: Homomorphically combine commitments and hints
         let combined_commitment = DoryCommitmentScheme::combine_commitments(&commitments, &coeffs);
-        let combined_hint = DoryCommitmentScheme::combine_hints(hints, &coeffs);
+        let num_rows = DoryGlobals::get_max_num_rows();
+        let combined_hint = DoryCommitmentScheme::combine_hints(hints, &coeffs, num_rows);
 
         // Step 5: Generate evaluation point first
         let opening_point: Vec<<Fr as JoltField>::Challenge> = (0..num_vars)
@@ -574,6 +584,8 @@ mod tests {
             &opening_point,
             Some(combined_hint),
             &mut prove_transcript,
+            5,
+            5,
         );
 
         // Step 9: Verify the proof
@@ -629,7 +641,8 @@ mod tests {
 
         // Step 4: Homomorphically combine commitments and hints
         let combined_commitment = DoryCommitmentScheme::combine_commitments(&commitments, &coeffs);
-        let combined_hint = DoryCommitmentScheme::combine_hints(hints, &coeffs);
+        let num_rows = DoryGlobals::get_max_num_rows();
+        let combined_hint = DoryCommitmentScheme::combine_hints(hints, &coeffs, num_rows);
 
         // Step 5: Generate evaluation point
         let opening_point: Vec<<Fr as JoltField>::Challenge> = (0..num_vars)
@@ -668,6 +681,8 @@ mod tests {
             &opening_point,
             Some(combined_hint),
             &mut prove_transcript,
+            5,
+            5,
         );
 
         // Step 10: Verify the proof
@@ -696,6 +711,8 @@ mod tests {
             &opening_point,
             Some(direct_hint),
             &mut prove_transcript2,
+            5,
+            5,
         );
 
         let mut verify_transcript2 = Blake2bTranscript::new(b"dory_batch_commit_e2e_test");
@@ -901,6 +918,8 @@ mod tests {
             &opening_point,
             Some(row_commitments),
             &mut prove_transcript,
+            5,
+            5,
         );
 
         let mut verify_transcript = Blake2bTranscript::new(b"dory_test");

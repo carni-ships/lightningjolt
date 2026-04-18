@@ -126,6 +126,64 @@ pub trait PairingCurve: Clone {
     fn multi_pair_g1_setup(ps: &[Self::G1], qs: &[Self::G2]) -> Self::GT {
         Self::multi_pair(ps, qs)
     }
+
+    /// Batch pairing that returns individual GT results for each pair.
+    ///
+    /// Unlike `multi_pair` which returns the product of all pairings, this returns
+    /// a vector of individual pairing results, enabling efficient batching when each
+    /// result needs to be processed separately (e.g., with different masks).
+    ///
+    /// # Parameters
+    /// - `ps`: G1 points
+    /// - `qs`: G2 points
+    ///
+    /// # Returns
+    /// Vector of GT elements: [e(p_0, q_0), e(p_1, q_1), ..., e(p_n-1, q_n-1)]
+    ///
+    /// # Default Implementation
+    /// Calls `multi_pair` for each pair individually (for backends without batch support)
+    fn multi_pair_batch(ps: &[Self::G1], qs: &[Self::G2]) -> Vec<Self::GT> {
+        assert_eq!(
+            ps.len(),
+            qs.len(),
+            "multi_pair_batch requires equal length vectors"
+        );
+        ps.iter()
+            .zip(qs.iter())
+            .map(|(p, q)| Self::pair(p, q))
+            .collect()
+    }
+
+    /// Batch pairing with G2 from setup, returning individual GT results.
+    ///
+    /// # Default Implementation
+    /// Delegates to `multi_pair_batch`
+    fn multi_pair_g2_setup_batch(ps: &[Self::G1], qs: &[Self::G2]) -> Vec<Self::GT> {
+        Self::multi_pair_batch(ps, qs)
+    }
+
+    /// Batch pairing with G1 from setup, returning individual GT results.
+    ///
+    /// # Default Implementation
+    /// Delegates to `multi_pair_batch`
+    fn multi_pair_g1_setup_batch(ps: &[Self::G1], qs: &[Self::G2]) -> Vec<Self::GT> {
+        Self::multi_pair_batch(ps, qs)
+    }
+
+    /// Compute two separate pairing products using a single Miller loop.
+    ///
+    /// Given pairs (a0[i], b0[i]) and (a1[i], b1[i]) for i=0..n,
+    /// computes Π e(a0[i], b0[i]) and Π e(a1[i], b1[i]) with one Miller loop.
+    ///
+    /// Returns (product0, product1) where:
+    /// - product0 = Π e(a0[i], b0[i])  (first set of pairs)
+    /// - product1 = Π e(a1[i], b1[i])  (second set of pairs)
+    fn multi_pair_two_products(
+        a0: &[Self::G1],
+        b0: &[Self::G2],
+        a1: &[Self::G1],
+        b1: &[Self::G2],
+    ) -> (Self::GT, Self::GT);
 }
 
 /// Dory requires MSMs and vector scaling ops, hence we expose a trait for optimized versions of such routines.
@@ -147,6 +205,42 @@ pub trait DoryRoutines<G: Group> {
         assert_eq!(left.len(), right.len(), "Lengths must match");
         for i in 0..left.len() {
             left[i] = left[i] * *scalar + right[i];
+        }
+    }
+
+    /// Fold 4 field vectors into one using 4-ary coefficients.
+    ///
+    /// Computes: output[i] = c0*q0[i] + c1*q1[i] + c2*q2[i] + c3*q3[i]
+    /// where coeffs = (c0, c1, c2, c3) with sum(c_i) = 1.
+    fn fold_4ary_field_vectors(
+        output: &mut [G::Scalar],
+        quarters: [&[G::Scalar]; 4],
+        coeffs: &(G::Scalar, G::Scalar, G::Scalar, G::Scalar),
+    ) {
+        assert_eq!(output.len(), quarters[0].len(), "Output length must match quarter length");
+        for i in 0..output.len() {
+            output[i] = coeffs.0 * quarters[0][i]
+                + coeffs.1 * quarters[1][i]
+                + coeffs.2 * quarters[2][i]
+                + coeffs.3 * quarters[3][i];
+        }
+    }
+
+    /// Fold 4 group element vectors into one using 4-ary coefficients.
+    ///
+    /// Computes: output[i] = c0*q0[i] + c1*q1[i] + c2*q2[i] + c3*q3[i]
+    /// where coeffs = (c0, c1, c2, c3) with sum(c_i) = 1.
+    fn fold_4ary_group_vectors(
+        output: &mut [G],
+        quarters: [&[G]; 4],
+        coeffs: &(G::Scalar, G::Scalar, G::Scalar, G::Scalar),
+    ) {
+        assert_eq!(output.len(), quarters[0].len(), "Output length must match quarter length");
+        for i in 0..output.len() {
+            output[i] = quarters[0][i].scale(&coeffs.0)
+                + quarters[1][i].scale(&coeffs.1)
+                + quarters[2][i].scale(&coeffs.2)
+                + quarters[3][i].scale(&coeffs.3);
         }
     }
 }

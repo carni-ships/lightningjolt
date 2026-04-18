@@ -936,6 +936,75 @@ impl<
             self.trace.len(),
             &self.rw_config,
         );
+
+        // Parallel initialization of sumcheck provers (when parallel-sumcheck feature is enabled)
+        // Each prover is independent and can be initialized concurrently.
+        // Nested structure with rayon's 2-argument join: we use join(join(A,B), join(C,D))
+        // to run 4 tasks in parallel.
+        #[cfg(feature = "parallel-sumcheck")]
+        let (first_group, second_group) = rayon::join(
+            || {
+                // First group: RamReadWriteChecking and (ProductVirtual, InstructionClaimReduction)
+                rayon::join(
+                    || {
+                        RamReadWriteCheckingProver::initialize(
+                            ram_read_write_checking_params,
+                            &self.trace,
+                            &self.preprocessing.shared.bytecode,
+                            &self.program_io.memory_layout,
+                            &self.initial_ram_state,
+                        )
+                    },
+                    || {
+                        let (product_virtual, instruction_reduction) = rayon::join(
+                            || {
+                                ProductVirtualRemainderProver::initialize(
+                                    spartan_product_virtual_remainder_params,
+                                    Arc::clone(&self.trace),
+                                )
+                            },
+                            || {
+                                InstructionLookupsClaimReductionSumcheckProver::initialize(
+                                    instruction_claim_reduction_params,
+                                    Arc::clone(&self.trace),
+                                )
+                            },
+                        );
+                        (product_virtual, instruction_reduction)
+                    },
+                )
+            },
+            || {
+                // Second group: RamRafEvaluation and OutputSumcheck
+                rayon::join(
+                    || {
+                        RamRafEvaluationSumcheckProver::initialize(
+                            ram_raf_evaluation_params,
+                            &self.trace,
+                            &self.program_io.memory_layout,
+                        )
+                    },
+                    || {
+                        OutputSumcheckProver::initialize(
+                            ram_output_check_params,
+                            &self.initial_ram_state,
+                            &self.final_ram_state,
+                            &self.program_io.memory_layout,
+                        )
+                    },
+                )
+            },
+        );
+
+        // Flatten nested tuples from parallel initialization
+        #[cfg(feature = "parallel-sumcheck")]
+        let (ram_read_write_checking, spartan_product_virtual_remainder, instruction_claim_reduction, ram_raf_evaluation, ram_output_check) = {
+            let ((ram_rw, (product, instruction)), (raf_eval, output)) = (first_group, second_group);
+            (ram_rw, product, instruction, raf_eval, output)
+        };
+
+        // Sequential initialization (when parallel-sumcheck feature is disabled)
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let ram_read_write_checking = RamReadWriteCheckingProver::initialize(
             ram_read_write_checking_params,
             &self.trace,
@@ -943,20 +1012,24 @@ impl<
             &self.program_io.memory_layout,
             &self.initial_ram_state,
         );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let spartan_product_virtual_remainder = ProductVirtualRemainderProver::initialize(
             spartan_product_virtual_remainder_params,
             Arc::clone(&self.trace),
         );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let instruction_claim_reduction =
             InstructionLookupsClaimReductionSumcheckProver::initialize(
                 instruction_claim_reduction_params,
                 Arc::clone(&self.trace),
             );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let ram_raf_evaluation = RamRafEvaluationSumcheckProver::initialize(
             ram_raf_evaluation_params,
             &self.trace,
             &self.program_io.memory_layout,
         );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let ram_output_check = OutputSumcheckProver::initialize(
             ram_output_check_params,
             &self.initial_ram_state,
@@ -1025,20 +1098,62 @@ impl<
             &mut self.transcript,
         );
 
+        // Parallel initialization of sumcheck provers (when parallel-sumcheck feature is enabled)
+        // Each prover is independent and can be initialized concurrently.
+        #[cfg(feature = "parallel-sumcheck")]
+        let ((spartan_shift, spartan_instruction_input), spartan_registers_claim_reduction) =
+            rayon::join(
+                || {
+                    rayon::join(
+                        || {
+                            ShiftSumcheckProver::initialize(
+                                spartan_shift_params,
+                                Arc::clone(&self.trace),
+                                &self.preprocessing.shared.bytecode,
+                            )
+                        },
+                        || {
+                            InstructionInputSumcheckProver::initialize(
+                                spartan_instruction_input_params,
+                                &self.trace,
+                                &self.opening_accumulator,
+                            )
+                        },
+                    )
+                },
+                || {
+                    RegistersClaimReductionSumcheckProver::initialize(
+                        spartan_registers_claim_reduction_params,
+                        Arc::clone(&self.trace),
+                    )
+                },
+            );
+
+        // Sequential initialization (when parallel-sumcheck feature is disabled)
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let spartan_shift = ShiftSumcheckProver::initialize(
             spartan_shift_params,
             Arc::clone(&self.trace),
             &self.preprocessing.shared.bytecode,
         );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let spartan_instruction_input = InstructionInputSumcheckProver::initialize(
             spartan_instruction_input_params,
             &self.trace,
             &self.opening_accumulator,
         );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let spartan_registers_claim_reduction = RegistersClaimReductionSumcheckProver::initialize(
             spartan_registers_claim_reduction_params,
             Arc::clone(&self.trace),
         );
+
+        // Flatten nested tuple from parallel initialization
+        #[cfg(feature = "parallel-sumcheck")]
+        let (spartan_shift, spartan_instruction_input, spartan_registers_claim_reduction) = {
+            let ((shift, input), registers) = ((spartan_shift, spartan_instruction_input), spartan_registers_claim_reduction);
+            (shift, input, registers)
+        };
 
         #[cfg(feature = "allocative")]
         {
@@ -1172,22 +1287,65 @@ impl<
         let registers_val_evaluation_params =
             RegistersValEvaluationSumcheckParams::new(&self.opening_accumulator);
 
+        // Parallel initialization of sumcheck provers (when parallel-sumcheck feature is enabled)
+        #[cfg(feature = "parallel-sumcheck")]
+        let ((lookups_read_raf, ram_ra_reduction), registers_val_evaluation) =
+            rayon::join(
+                || {
+                    rayon::join(
+                        || {
+                            InstructionReadRafSumcheckProver::initialize(
+                                lookups_read_raf_params,
+                                Arc::clone(&self.trace),
+                            )
+                        },
+                        || {
+                            RamRaClaimReductionSumcheckProver::initialize(
+                                ram_ra_reduction_params,
+                                &self.trace,
+                                &self.program_io.memory_layout,
+                                &self.one_hot_params,
+                            )
+                        },
+                    )
+                },
+                || {
+                    RegistersValEvaluationSumcheckProver::initialize(
+                        registers_val_evaluation_params,
+                        &self.trace,
+                        &self.preprocessing.shared.bytecode,
+                        &self.program_io.memory_layout,
+                    )
+                },
+            );
+
+        // Sequential initialization (when parallel-sumcheck feature is disabled)
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let lookups_read_raf = InstructionReadRafSumcheckProver::initialize(
             lookups_read_raf_params,
             Arc::clone(&self.trace),
         );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let ram_ra_reduction = RamRaClaimReductionSumcheckProver::initialize(
             ram_ra_reduction_params,
             &self.trace,
             &self.program_io.memory_layout,
             &self.one_hot_params,
         );
+        #[cfg(not(feature = "parallel-sumcheck"))]
         let registers_val_evaluation = RegistersValEvaluationSumcheckProver::initialize(
             registers_val_evaluation_params,
             &self.trace,
             &self.preprocessing.shared.bytecode,
             &self.program_io.memory_layout,
         );
+
+        // Flatten nested tuple from parallel initialization
+        #[cfg(feature = "parallel-sumcheck")]
+        let (lookups_read_raf, ram_ra_reduction, registers_val_evaluation) = {
+            let ((lookups, ram_ra), registers) = ((lookups_read_raf, ram_ra_reduction), registers_val_evaluation);
+            (lookups, ram_ra, registers)
+        };
 
         #[cfg(feature = "allocative")]
         {

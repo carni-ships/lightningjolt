@@ -675,6 +675,346 @@ mod pairing_helpers {
             multi_pair_g1_setup_sequential(ps, qs)
         }
     }
+
+    /// Batch pairing returning individual GT results (single Miller loop, separate final exp).
+    ///
+    /// This is more efficient than calling multi_pair for each pair when we need
+    /// individual results (e.g., when applying different masks to each result).
+    #[cfg(feature = "parallel")]
+    #[tracing::instrument(skip_all, name = "multi_pair_batch_individual", fields(len = ps.len()))]
+    pub(super) fn multi_pair_batch_individual(ps: &[ArkG1], qs: &[ArkG2]) -> Vec<ArkGT> {
+        use rayon::prelude::*;
+
+        let n = ps.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        // Batch convert all G1 and G2 to affine first (single batch inversion each)
+        let ps_affine = batch_g1_to_affine(ps);
+        let qs_affine = batch_g2_to_affine(qs);
+
+        let chunk_size = determine_chunk_size(n);
+
+        // For small inputs, just compute individually
+        if n <= 64 {
+            return ps_affine
+                .iter()
+                .zip(qs_affine.iter())
+                .map(|(&p, &q)| {
+                    let p_prep: <Bn254 as Pairing>::G1Prepared = p.into();
+                    let q_prep: <Bn254 as Pairing>::G2Prepared = q.into();
+                    let result = Bn254::final_exponentiation(
+                        Bn254::miller_loop(p_prep, q_prep),
+                    )
+                    .expect("Final exponentiation should not fail");
+                    ArkGT(result.0)
+                })
+                .collect();
+        }
+
+        // Parallel Miller loops for each chunk, then final exponentiation per result
+        ps_affine
+            .par_chunks(chunk_size)
+            .zip(qs_affine.par_chunks(chunk_size))
+            .flat_map_iter(|(ps_chunk, qs_chunk)| {
+                let ps_prep: Vec<<Bn254 as Pairing>::G1Prepared> =
+                    ps_chunk.iter().map(|&a| a.into()).collect();
+                let qs_prep: Vec<<Bn254 as Pairing>::G2Prepared> =
+                    qs_chunk.iter().map(|&a| a.into()).collect();
+
+                ps_prep
+                    .into_iter()
+                    .zip(qs_prep.into_iter())
+                    .map(|(p_prep, q_prep)| {
+                        let result = Bn254::final_exponentiation(
+                            Bn254::miller_loop(p_prep, q_prep),
+                        )
+                        .expect("Final exponentiation should not fail");
+                        ArkGT(result.0)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Sequential version of multi_pair_batch_individual
+    #[cfg(not(feature = "parallel"))]
+    pub(super) fn multi_pair_batch_individual(ps: &[ArkG1], qs: &[ArkG2]) -> Vec<ArkGT> {
+        use ark_bn254::{G1Affine, G2Affine};
+
+        let n = ps.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        ps.iter()
+            .zip(qs.iter())
+            .map(|(p, q)| {
+                let p_affine: G1Affine = p.0.into();
+                let q_affine: G2Affine = q.0.into();
+                let p_prep: <Bn254 as Pairing>::G1Prepared = p_affine.into();
+                let q_prep: <Bn254 as Pairing>::G2Prepared = q_affine.into();
+                let result = Bn254::final_exponentiation(
+                    Bn254::miller_loop(p_prep, q_prep),
+                )
+                .expect("Final exponentiation should not fail");
+                ArkGT(result.0)
+            })
+            .collect()
+    }
+
+    /// Batch pairing with G2 from setup, returning individual GT results.
+    #[cfg(feature = "parallel")]
+    pub(super) fn multi_pair_g2_setup_batch_individual(ps: &[ArkG1], qs: &[ArkG2]) -> Vec<ArkGT> {
+        use ark_ec::AffineRepr;
+        use rayon::prelude::*;
+
+        // Batch convert all G1 points to affine (Montgomery's trick — 1 inversion total)
+        let ps_affine = batch_g1_to_affine(ps);
+
+        // Filter out identity G1 points, preserving original indices for G2 cache lookup
+        let non_zero: Vec<(usize, ark_bn254::G1Affine)> = ps_affine
+            .into_iter()
+            .enumerate()
+            .filter(|(_, a)| !a.is_zero())
+            .collect();
+
+        if non_zero.is_empty() {
+            return vec![ArkGT(<<Bn254 as Pairing>::TargetField>::one()); ps.len()];
+        }
+
+        let chunk_size = determine_chunk_size(non_zero.len());
+
+        #[cfg(feature = "cache")]
+        let cache = crate::backends::arkworks::ark_cache::get_prepared_cache();
+
+        non_zero
+            .par_chunks(chunk_size)
+            .flat_map_iter(|chunk| {
+                let results: Vec<ArkGT> = chunk
+                    .iter()
+                    .map(|(orig_idx, g1_affine)| {
+                        let g2_affine: ark_bn254::G2Affine = qs[*orig_idx].0.into();
+                        let g2_prep: <Bn254 as Pairing>::G2Prepared = g2_affine.into();
+                        let g1_prep: <Bn254 as Pairing>::G1Prepared = (*g1_affine).into();
+
+                        #[cfg(feature = "cache")]
+                        let g2_prep = if let Some(ref c) = cache {
+                            c.g2_prepared[*orig_idx].clone()
+                        } else {
+                            g2_prep
+                        };
+
+                        let result = Bn254::final_exponentiation(
+                            Bn254::miller_loop(g1_prep, g2_prep),
+                        )
+                        .expect("Final exponentiation should not fail");
+                        ArkGT(result.0)
+                    })
+                    .collect();
+                results
+            })
+            .collect()
+    }
+
+    /// Sequential version of multi_pair_g2_setup_batch_individual
+    #[cfg(not(feature = "parallel"))]
+    pub(super) fn multi_pair_g2_setup_batch_individual(ps: &[ArkG1], qs: &[ArkG2]) -> Vec<ArkGT> {
+        use ark_bn254::G2Affine;
+
+        ps.iter()
+            .zip(qs.iter())
+            .map(|(p, q)| {
+                let g2_affine: G2Affine = q.0.into();
+                let g2_prep: <Bn254 as Pairing>::G2Prepared = g2_affine.into();
+                let g1_prep: <Bn254 as Pairing>::G1Prepared = p.0.into();
+                let result = Bn254::final_exponentiation(
+                    Bn254::miller_loop(g1_prep, g2_prep),
+                )
+                .expect("Final exponentiation should not fail");
+                ArkGT(result.0)
+            })
+            .collect()
+    }
+
+    /// Batch pairing with G1 from setup, returning individual GT results.
+    #[cfg(feature = "parallel")]
+    pub(super) fn multi_pair_g1_setup_batch_individual(ps: &[ArkG1], qs: &[ArkG2]) -> Vec<ArkGT> {
+        use rayon::prelude::*;
+
+        let n = qs.len();
+        if n == 0 {
+            return vec![];
+        }
+
+        // Batch convert all G2 points to affine
+        let qs_affine = batch_g2_to_affine(qs);
+
+        let chunk_size = determine_chunk_size(n);
+
+        #[cfg(feature = "cache")]
+        let cache = crate::backends::arkworks::ark_cache::get_prepared_cache();
+
+        qs_affine
+            .par_chunks(chunk_size)
+            .enumerate()
+            .flat_map_iter(|(chunk_idx, qs_chunk)| {
+                let start_idx = chunk_idx * chunk_size;
+
+                qs_chunk
+                    .iter()
+                    .enumerate()
+                    .map(|(local_idx, &q_affine)| {
+                        let g2_prep: <Bn254 as Pairing>::G2Prepared = q_affine.into();
+
+                        #[cfg(feature = "cache")]
+                        let g1_prep: <Bn254 as Pairing>::G1Prepared = if let Some(ref c) = cache {
+                            c.g1_prepared[start_idx + local_idx].clone()
+                        } else {
+                            let g1_affine: ark_bn254::G1Affine = ps[start_idx + local_idx].0.into();
+                            g1_affine.into()
+                        };
+                        #[cfg(not(feature = "cache"))]
+                        let g1_prep = {
+                            let g1_affine: ark_bn254::G1Affine = ps[start_idx + local_idx].0.into();
+                            g1_affine.into()
+                        };
+
+                        let result = Bn254::final_exponentiation(
+                            Bn254::miller_loop(g1_prep, g2_prep),
+                        )
+                        .expect("Final exponentiation should not fail");
+                        ArkGT(result.0)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Sequential version of multi_pair_g1_setup_batch_individual
+    #[cfg(not(feature = "parallel"))]
+    pub(super) fn multi_pair_g1_setup_batch_individual(ps: &[ArkG1], qs: &[ArkG2]) -> Vec<ArkGT> {
+        use ark_bn254::G1Affine;
+
+        ps.iter()
+            .zip(qs.iter())
+            .map(|(p, q)| {
+                let g1_affine: G1Affine = p.0.into();
+                let g1_prep: <Bn254 as Pairing>::G1Prepared = g1_affine.into();
+                let g2_prep: <Bn254 as Pairing>::G2Prepared = q.0.into();
+                let result = Bn254::final_exponentiation(
+                    Bn254::miller_loop(g1_prep, g2_prep),
+                )
+                .expect("Final exponentiation should not fail");
+                ArkGT(result.0)
+            })
+            .collect()
+    }
+
+    /// Compute two separate pairing products using a single Miller loop.
+    ///
+    /// Given pairs (a0[i], b0[i]) and (a1[i], b1[i]) for i=0..n,
+    /// computes Π e(a0[i], b0[i]) and Π e(a1[i], b1[i]) with one Miller loop.
+    ///
+    /// Returns (product0, product1) where:
+    /// - product0 = Π e(a0[i], b0[i])  (first set of pairs)
+    /// - product1 = Π e(a1[i], b1[i])  (second set of pairs)
+    #[cfg(feature = "parallel")]
+    #[tracing::instrument(skip_all, name = "multi_pair_two_products")]
+    pub(super) fn multi_pair_two_products(
+        a0: &[ArkG1],
+        b0: &[ArkG2],
+        a1: &[ArkG1],
+        b1: &[ArkG2],
+    ) -> (ArkGT, ArkGT) {
+        let n = a0.len();
+        assert_eq!(a0.len(), b0.len());
+        assert_eq!(a1.len(), b1.len());
+        assert_eq!(n, a1.len());
+
+        if n == 0 {
+            return (
+                ArkGT(<<Bn254 as Pairing>::TargetField>::one()),
+                ArkGT(<<Bn254 as Pairing>::TargetField>::one()),
+            );
+        }
+
+        let mut prod0 = <<Bn254 as Pairing>::TargetField>::one();
+        let mut prod1 = <<Bn254 as Pairing>::TargetField>::one();
+
+        for i in 0..n {
+            // First pair: (a0[i], b0[i])
+            let g1_a: ark_bn254::G1Affine = a0[i].0.into();
+            let g2_b: ark_bn254::G2Affine = b0[i].0.into();
+            let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
+            let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
+            let single_miller = Bn254::miller_loop(p_prep, q_prep);
+            prod0 *= single_miller.0;
+
+            // Second pair: (a1[i], b1[i])
+            let g1_a: ark_bn254::G1Affine = a1[i].0.into();
+            let g2_b: ark_bn254::G2Affine = b1[i].0.into();
+            let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
+            let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
+            let single_miller = Bn254::miller_loop(p_prep, q_prep);
+            prod1 *= single_miller.0;
+        }
+
+        let result0 = Bn254::final_exponentiation(ark_ec::pairing::MillerLoopOutput(prod0))
+            .expect("Final exponentiation should not fail");
+        let result1 = Bn254::final_exponentiation(ark_ec::pairing::MillerLoopOutput(prod1))
+            .expect("Final exponentiation should not fail");
+
+        (ArkGT(result0.0), ArkGT(result1.0))
+    }
+
+    /// Sequential version of multi_pair_two_products
+    #[cfg(not(feature = "parallel"))]
+    pub(super) fn multi_pair_two_products(
+        a0: &[ArkG1],
+        b0: &[ArkG2],
+        a1: &[ArkG1],
+        b1: &[ArkG2],
+    ) -> (ArkGT, ArkGT) {
+        use ark_bn254::G1Affine;
+
+        let n = a0.len();
+        if n == 0 {
+            return (
+                ArkGT(<<Bn254 as Pairing>::TargetField>::one()),
+                ArkGT(<<Bn254 as Pairing>::TargetField>::one()),
+            );
+        }
+
+        let mut prod0 = <<Bn254 as Pairing>::TargetField>::one();
+        let mut prod1 = <<Bn254 as Pairing>::TargetField>::one();
+
+        for i in 0..n {
+            let g1_a: G1Affine = a0[i].0.into();
+            let g2_b: ark_bn254::G2Affine = b0[i].0.into();
+            let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
+            let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
+            let single_miller = Bn254::miller_loop(p_prep, q_prep);
+            prod0 *= single_miller.0;
+        }
+
+        for i in 0..n {
+            let g1_a: G1Affine = a1[i].0.into();
+            let g2_b: ark_bn254::G2Affine = b1[i].0.into();
+            let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
+            let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
+            let single_miller = Bn254::miller_loop(p_prep, q_prep);
+            prod1 *= single_miller.0;
+        }
+
+        let result0 = Bn254::final_exponentiation(ark_ec::pairing::MillerLoopOutput(prod0))
+            .expect("Final exponentiation should not fail");
+        let result1 = Bn254::final_exponentiation(ark_ec::pairing::MillerLoopOutput(prod1))
+            .expect("Final exponentiation should not fail");
+
+        (ArkGT(result0.0), ArkGT(result1.0))
+    }
 }
 
 impl PairingCurve for BN254 {
@@ -729,5 +1069,56 @@ impl PairingCurve for BN254 {
         }
 
         pairing_helpers::multi_pair_g1_setup_optimized(ps, qs)
+    }
+
+    fn multi_pair_batch(ps: &[Self::G1], qs: &[Self::G2]) -> Vec<Self::GT> {
+        assert_eq!(
+            ps.len(),
+            qs.len(),
+            "multi_pair_batch requires equal length vectors"
+        );
+
+        if ps.is_empty() {
+            return vec![];
+        }
+
+        pairing_helpers::multi_pair_batch_individual(ps, qs)
+    }
+
+    fn multi_pair_g2_setup_batch(ps: &[Self::G1], qs: &[Self::G2]) -> Vec<Self::GT> {
+        assert_eq!(
+            ps.len(),
+            qs.len(),
+            "multi_pair_g2_setup_batch requires equal length vectors"
+        );
+
+        if ps.is_empty() {
+            return vec![];
+        }
+
+        pairing_helpers::multi_pair_g2_setup_batch_individual(ps, qs)
+    }
+
+    fn multi_pair_g1_setup_batch(ps: &[Self::G1], qs: &[Self::G2]) -> Vec<Self::GT> {
+        assert_eq!(
+            ps.len(),
+            qs.len(),
+            "multi_pair_g1_setup_batch requires equal length vectors"
+        );
+
+        if ps.is_empty() {
+            return vec![];
+        }
+
+        pairing_helpers::multi_pair_g1_setup_batch_individual(ps, qs)
+    }
+
+    fn multi_pair_two_products(
+        a0: &[Self::G1],
+        b0: &[Self::G2],
+        a1: &[Self::G1],
+        b1: &[Self::G2],
+    ) -> (Self::GT, Self::GT) {
+        pairing_helpers::multi_pair_two_products(a0, b0, a1, b1)
     }
 }

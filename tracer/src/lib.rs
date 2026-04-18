@@ -119,6 +119,18 @@ pub fn trace(
 
 use crate::utils::trace_writer::{TraceBatchCollector, TraceWriter, TraceWriterConfig};
 
+/// Options for trace file output
+#[derive(Debug, Clone, Default)]
+pub enum TraceOutputMode {
+    /// Standard uncompressed output (postcard serialization)
+    #[default]
+    Standard,
+    /// Compressed output with zstd
+    Compressed {
+        compression_level: i32,
+    },
+}
+
 pub fn trace_to_file(
     elf_contents: &[u8],
     elf_path: Option<&std::path::PathBuf>,
