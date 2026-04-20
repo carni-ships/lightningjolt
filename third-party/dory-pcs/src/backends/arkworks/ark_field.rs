@@ -55,6 +55,12 @@ impl Field for ArkFr {
             ArkFr(-Fr::from((-val) as u64))
         }
     }
+
+    fn branch_bit(&self) -> bool {
+        // Extract LSB from the field element's little-endian byte representation.
+        // BN254 scalar field representation uses 4 little-endian 64-bit limbs.
+        self.0.into_bigint().to_bytes_le()[0] & 1 == 1
+    }
 }
 
 impl Add for ArkFr {

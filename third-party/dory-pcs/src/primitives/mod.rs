@@ -5,3 +5,15 @@ pub mod poly;
 pub mod serialization;
 pub mod transcript;
 pub use serialization::*;
+
+// Lattice-based primitives
+#[cfg(feature = "lattice")]
+pub mod lattice_trait;
+#[cfg(feature = "lattice")]
+pub mod lattice_curve;
+
+// Re-export lattice types
+#[cfg(feature = "lattice")]
+pub use lattice_trait::{LatticeCurve, LatticeElement, LatticeField};
+#[cfg(feature = "lattice")]
+pub use lattice_curve::KyberCurve;

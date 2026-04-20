@@ -142,3 +142,17 @@ pub fn get_prepared_cache() -> Option<Arc<PreparedCache>> {
 pub fn is_cached() -> bool {
     CACHE.read().unwrap().is_some()
 }
+
+/// Reset the prepared cache.
+///
+/// This clears any cached prepared G1/G2 points, forcing re-initialization
+/// on the next call to `init_cache`. This is useful for test isolation,
+/// where different tests may use different setup sizes.
+///
+/// # Panics
+/// Panics if the internal `RwLock` is poisoned.
+#[cfg(feature = "cache")]
+pub fn reset_cache() {
+    let mut write_guard = CACHE.write().unwrap();
+    *write_guard = None;
+}

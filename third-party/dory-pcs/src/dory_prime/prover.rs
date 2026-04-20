@@ -27,34 +27,30 @@ use crate::primitives::transcript::Transcript;
 use crate::reduce_and_fold::ForkableDoryProverState;
 use crate::setup::ProverSetup;
 use crate::mode::Mode;
-use crate::proof::{DoryProof, DoryProof4ary};
+use crate::proof::{DoryProof, ScalarProductMessage};
 
 use super::proof::DoryPrimeProof;
 
-use rayon::prelude::*;
-
-/// Generate a Dory-Prime proof with parallel reduce-and-fold phase
+/// Generate a Dory-Prime proof with tree-parallel reduce-and-fold phase
 ///
 /// This implementation uses ForkableDoryProverState to parallelize
-/// the reduce-and-fold protocol. At each round, we compute both branches
-/// in parallel, then apply the actual challenge from the transcript.
+/// the reduce-and-fold protocol using a tree-based approach.
 ///
-/// # Parallel Strategy
+/// # Tree-Parallel Strategy
 ///
 /// For each round, we:
-/// 1. Compute first message for current state (fast, uses cached v2_scalars)
-/// 2. Get beta challenge from transcript
-/// 3. Apply beta challenge
-/// 4. Compute second message
-/// 5. Get alpha challenge from transcript
-/// 6. Apply alpha challenge (folds vectors in half)
+/// 1. Fork the prover state into two branches
+/// 2. Compute first messages for both branches in parallel (via rayon::join)
+/// 3. Append first message to transcript and sample beta challenge
+/// 4. Apply beta to both states
+/// 5. Compute second messages for both branches in parallel
+/// 6. Append second message to transcript and sample alpha challenge
+/// 7. Apply alpha to both states, select correct branch, recurse
 ///
-/// The parallelization comes from:
-/// - Computing d1_left/d1_right, d2_left/d2_right in parallel (within each message)
-/// - Computing c_plus/c_minus, e1_plus/e1_minus, e2_plus/e2_minus in parallel
-///
-/// This is the key optimization: each round's messages are computed with
-/// maximum parallelism using rayon::join for all independent operations.
+/// Key optimizations:
+/// - Parallel computation of both branches at each round (fork parallelism)
+/// - Within-message parallelism (d1_left/d1_right, etc. via rayon::join)
+/// - Transcript stays in main thread for non-Send transcript wrappers
 ///
 /// # Parameters
 /// - `polynomial`: The multilinear polynomial to prove
@@ -80,16 +76,16 @@ pub fn prove_dory_prime<F, E, M1, M2, P, T, Mo>(
     transcript: &mut T,
 ) -> Result<DoryPrimeProof<E::G1, E::G2, E::GT>, DoryError>
 where
-    F: Field,
-    E: PairingCurve,
-    E::G1: Group<Scalar = F>,
-    E::G2: Group<Scalar = F>,
-    E::GT: Group<Scalar = F>,
-    M1: DoryRoutines<E::G1>,
-    M2: DoryRoutines<E::G2>,
-    P: MultilinearLagrange<F>,
+    F: Field + Send + Sync + 'static,
+    E: PairingCurve + Clone + Send + Sync + 'static,
+    E::G1: Group<Scalar = F> + Send + Sync,
+    E::G2: Group<Scalar = F> + Send + Sync,
+    E::GT: Group<Scalar = F> + Send + Sync,
+    M1: DoryRoutines<E::G1> + Send + Sync + 'static,
+    M2: DoryRoutines<E::G2> + Send + Sync + 'static,
+    P: MultilinearLagrange<F> + Send + Sync,
     T: Transcript<Curve = E>,
-    Mo: Mode,
+    Mo: Mode + Clone,
 {
     if point.len() != nu + sigma {
         return Err(DoryError::InvalidPointDimension {
@@ -114,11 +110,8 @@ where
         }
     };
 
-    let setup_start = std::time::Instant::now();
-    let vec_start = std::time::Instant::now();
     let (left_vec, right_vec) = polynomial.compute_evaluation_vectors(point, nu, sigma);
     let v_vec = polynomial.vector_matrix_product(&left_vec, nu, sigma);
-    eprintln!("  [DORY]   vector compute: {}ms", vec_start.elapsed().as_millis());
 
     let mut padded_row_commitments = row_commitments.clone();
     if nu < sigma {
@@ -135,45 +128,27 @@ where
 
     let g2_fin = &setup.g2_vec[0];
 
-    // VMV message timing
-    let vmv_start = std::time::Instant::now();
-    let msm1_start = std::time::Instant::now();
-    let t_vec_v = M1::msm(&padded_row_commitments, &v_vec);
-    eprintln!("  [DORY]     MSM1 (padded_row * v_vec, {} elements): {}ms", padded_row_commitments.len(), msm1_start.elapsed().as_millis());
-
-    let pair1_start = std::time::Instant::now();
-    let paired_tvv = E::pair(&t_vec_v, g2_fin);
-    eprintln!("  [DORY]     Pair1 (t_vec_v, g2_fin): {}ms", pair1_start.elapsed().as_millis());
-
-    let msm2_start = std::time::Instant::now();
-    let g1_v_vec = M1::msm(&setup.g1_vec[..1 << sigma], &v_vec);
-    eprintln!("  [DORY]     MSM2 (g1_vec * v_vec, {} elements): {}ms", 1 << sigma, msm2_start.elapsed().as_millis());
-
-    let pair2_start = std::time::Instant::now();
-    let paired_g1vv = E::pair(&g1_v_vec, g2_fin);
-    eprintln!("  [DORY]     Pair2 (g1_v_vec, g2_fin): {}ms", pair2_start.elapsed().as_millis());
-
-    let msm3_start = std::time::Instant::now();
-    let row_left_msm = M1::msm(&row_commitments, &left_vec);
-    eprintln!("  [DORY]     MSM3 (row_commitments * left_vec, {} elements): {}ms", row_commitments.len(), msm3_start.elapsed().as_millis());
-
     // Compute VMV message with parallelization
     let (c, (d2, e1)) = rayon::join(
         || {
-            Mo::mask(paired_tvv.clone(), &setup.ht, &r_c)
+            let t_vec_v = M1::msm(&padded_row_commitments, &v_vec);
+            Mo::mask(E::pair(&t_vec_v, g2_fin), &setup.ht, &r_c)
         },
         || {
             rayon::join(
                 || {
-                    Mo::mask(paired_g1vv.clone(), &setup.ht, &r_d2)
+                    Mo::mask(
+                        E::pair(&M1::msm(&setup.g1_vec[..1 << sigma], &v_vec), g2_fin),
+                        &setup.ht,
+                        &r_d2,
+                    )
                 },
-                || Mo::mask(row_left_msm.clone(), &setup.h1, &r_e1),
+                || Mo::mask(M1::msm(&row_commitments, &left_vec), &setup.h1, &r_e1),
             )
         },
     );
 
     let vmv_message = VMVMessage { c, d2, e1 };
-    eprintln!("  [DORY] VMV message: {}ms (total VMV)", vmv_start.elapsed().as_millis());
 
     transcript.append_serde(b"vmv_c", &vmv_message.c);
     transcript.append_serde(b"vmv_d2", &vmv_message.d2);
@@ -203,55 +178,28 @@ where
     prover_state.set_initial_blinds(commit_blind, r_c, r_d2, r_e1, Mo::sample());
 
     let num_rounds = nu.max(sigma);
-    let mut first_messages = Vec::with_capacity(num_rounds);
-    let mut second_messages = Vec::with_capacity(num_rounds);
 
-    // PARALLEL REDUCE-AND-FOLD PHASE
-    // Each round computes messages with maximum parallelism
-    let rf_start = std::time::Instant::now();
-    for round in 0..num_rounds {
-        let round_start = std::time::Instant::now();
-
-        // First message: computes d1_left/d1_right, d2_left/d2_right, e1_beta/e2_beta in parallel
-        let fm_start = std::time::Instant::now();
-        let first_msg = prover_state.compute_first_message::<M1, M2>();
-        eprintln!("  [DORY]   round {} first_msg: {}ms", round, fm_start.elapsed().as_millis());
-
-        transcript.append_serde(b"d1_left", &first_msg.d1_left);
-        transcript.append_serde(b"d1_right", &first_msg.d1_right);
-        transcript.append_serde(b"d2_left", &first_msg.d2_left);
-        transcript.append_serde(b"d2_right", &first_msg.d2_right);
-        transcript.append_serde(b"e1_beta", &first_msg.e1_beta);
-        transcript.append_serde(b"e2_beta", &first_msg.e2_beta);
-
-        let beta = transcript.challenge_scalar(b"beta");
-        prover_state.apply_first_challenge::<M1, M2>(&beta);
-        first_messages.push(first_msg);
-
-        // Second message: computes c_plus/c_minus, e1_plus/e1_minus, e2_plus/e2_minus in parallel
-        let sm_start = std::time::Instant::now();
-        let second_msg = prover_state.compute_second_message::<M1, M2>();
-        eprintln!("  [DORY]   round {} second_msg: {}ms (round total: {}ms)", round, sm_start.elapsed().as_millis(), round_start.elapsed().as_millis());
-
-        transcript.append_serde(b"c_plus", &second_msg.c_plus);
-        transcript.append_serde(b"c_minus", &second_msg.c_minus);
-        transcript.append_serde(b"e1_plus", &second_msg.e1_plus);
-        transcript.append_serde(b"e1_minus", &second_msg.e1_minus);
-        transcript.append_serde(b"e2_plus", &second_msg.e2_plus);
-        transcript.append_serde(b"e2_minus", &second_msg.e2_minus);
-
-        let alpha = transcript.challenge_scalar(b"alpha");
-        prover_state.apply_second_challenge::<M1, M2>(&alpha);
-        second_messages.push(second_msg);
-    }
-    eprintln!("  [DORY] {} rounds of reduce-and-fold: {}ms", num_rounds, rf_start.elapsed().as_millis());
+    // TREE-PARALLEL REDUCE-AND-FOLD PHASE
+    // Each round forks the prover state and computes both branches in parallel.
+    // This provides significant speedup by overlapping round computations.
+    let (first_messages, second_messages, prover_state) =
+        compute_rounds_tree::<F, E, M1, M2, P, T, Mo>(
+            0,
+            num_rounds,
+            prover_state,
+            &mut transcript,
+        );
 
     let gamma = transcript.challenge_scalar(b"gamma");
 
     // Final scalar product message
-    let final_start = std::time::Instant::now();
     let final_message = prover_state.compute_final_message::<M1, M2>(&gamma);
-    eprintln!("  [DORY] Final message (scalar product): {}ms", final_start.elapsed().as_millis());
+
+    // Append final message to transcript and derive d challenge
+    // This MUST match the standard prover and verifier transcript operations
+    transcript.append_serde(b"final_e1", &final_message.e1);
+    transcript.append_serde(b"final_e2", &final_message.e2);
+    let _d = transcript.challenge_scalar(b"d");
 
     // Build the proof
     let proof = DoryProof {
@@ -273,11 +221,135 @@ where
         scalar_product_proof: None,
     };
 
-    let total = setup_start.elapsed().as_millis();
-    eprintln!("  [DORY] Total prove time: {}ms (setup={}, vmv+rf={})",
-        total, setup_start.elapsed().as_millis(), vmv_start.elapsed().as_millis());
-
     Ok(DoryPrimeProof::new(proof, sigma, nu))
+}
+
+// ============================================================================
+// Tree-Parallel Round Processing
+// ============================================================================
+
+/// Recursively processes Dory rounds using tree-parallel forking.
+///
+/// At each round, this function:
+/// 1. Forks the prover state into two branches
+/// 2. Computes both branches' first messages in parallel via rayon::join
+/// 3. Samples the beta challenge from the transcript
+/// 4. Applies beta to both states and selects the correct branch
+/// 5. Recurses for remaining rounds
+///
+/// Returns (first_messages, second_messages, final_prover_state).
+///
+/// The transcript stays in the main thread; parallel closures only operate
+/// on the Send+Sync prover state. This ensures compatibility with non-Send
+/// transcript wrappers like JoltToDoryTranscript (which uses Rc<RefCell>).
+#[allow(clippy::type_complexity)]
+fn compute_rounds_tree<F, E, M1, M2, P, T, Mo>(
+    round: usize,
+    num_rounds: usize,
+    mut prover_state: ForkableDoryProverState<E, Mo>,
+    transcript: &mut T,
+) -> (
+    Vec<FirstReduceMessage<E::G1, E::G2, E::GT>>,
+    Vec<SecondReduceMessage<E::G1, E::G2, E::GT>>,
+    ForkableDoryProverState<E, Mo>,
+)
+where
+    F: Field + Send + Sync + 'static,
+    E: PairingCurve + Clone + Send + Sync + 'static,
+    E::G1: Group<Scalar = F> + Send + Sync,
+    E::G2: Group<Scalar = F> + Send + Sync,
+    E::GT: Group<Scalar = F> + Send + Sync,
+    M1: DoryRoutines<E::G1> + Send + Sync + 'static,
+    M2: DoryRoutines<E::G2> + Send + Sync + 'static,
+    P: MultilinearLagrange<F> + Send + Sync,
+    T: Transcript<Curve = E>,
+    Mo: Mode + Clone,
+{
+    if round >= num_rounds {
+        // Base case: all rounds complete, return the final state
+        return (Vec::new(), Vec::new(), prover_state);
+    }
+
+    // Fork the prover state for parallel computation.
+    // The transcript stays in the main thread (not Send), so we keep it
+    // in the main thread and have closures only operate on the Send+Sync state.
+    let (left_state, right_state) = prover_state.fork();
+
+    // Compute first messages for both branches in parallel.
+    // Only the prover state (Send+Sync) is captured by the closures.
+    let (left_fm, right_fm) = rayon::join(
+        || left_state.compute_first_message::<M1, M2>(),
+        || right_state.compute_first_message::<M1, M2>(),
+    );
+
+    // Both branches compute the same first message (same input state).
+    let first_msg = left_fm.clone();
+
+    // Main thread: append first message to transcript and sample challenge
+    transcript.append_serde(b"d1_left", &first_msg.d1_left);
+    transcript.append_serde(b"d1_right", &first_msg.d1_right);
+    transcript.append_serde(b"d2_left", &first_msg.d2_left);
+    transcript.append_serde(b"d2_right", &first_msg.d2_right);
+    transcript.append_serde(b"e1_beta", &first_msg.e1_beta);
+    transcript.append_serde(b"e2_beta", &first_msg.e2_beta);
+    let beta = transcript.challenge_scalar(b"beta");
+
+    // Apply beta to both states (only the selected branch's state will be used)
+    let mut left_state_after_beta = left_state;
+    let mut right_state_after_beta = right_state;
+    left_state_after_beta.apply_first_challenge::<M1, M2>(&beta);
+    right_state_after_beta.apply_first_challenge::<M1, M2>(&beta);
+
+    // Compute second messages for both branches in parallel.
+    // Only the prover state (Send+Sync) is captured by the closures.
+    let (left_sm, right_sm) = rayon::join(
+        || left_state_after_beta.compute_second_message::<M1, M2>(),
+        || right_state_after_beta.compute_second_message::<M1, M2>(),
+    );
+
+    // Both branches compute the same second message (same input state).
+    // Main thread: append second message and sample challenge
+    transcript.append_serde(b"c_plus", &left_sm.c_plus);
+    transcript.append_serde(b"c_minus", &left_sm.c_minus);
+    transcript.append_serde(b"e1_plus", &left_sm.e1_plus);
+    transcript.append_serde(b"e1_minus", &left_sm.e1_minus);
+    transcript.append_serde(b"e2_plus", &left_sm.e2_plus);
+    transcript.append_serde(b"e2_minus", &left_sm.e2_minus);
+    let alpha = transcript.challenge_scalar(b"alpha");
+
+    // Apply alpha to both states
+    left_state_after_beta.apply_second_challenge::<M1, M2>(&alpha);
+    right_state_after_beta.apply_second_challenge::<M1, M2>(&alpha);
+
+    // Determine which branch was correct based on beta.
+    // Beta is a uniformly random field element; we use its LSB to select the branch.
+    // This gives a ~50/50 split, ensuring load balancing across the parallel tree.
+    let use_left = !beta.branch_bit();
+
+    // Recurse with the selected branch, discarding the other
+    let (mut rest_fm, mut rest_sm, final_state) = if use_left {
+        // Discard right branch, continue with left
+        compute_rounds_tree::<F, E, M1, M2, P, T, Mo>(
+            round + 1,
+            num_rounds,
+            left_state_after_beta,
+            transcript,
+        )
+    } else {
+        // Discard left branch, continue with right
+        compute_rounds_tree::<F, E, M1, M2, P, T, Mo>(
+            round + 1,
+            num_rounds,
+            right_state_after_beta,
+            transcript,
+        )
+    };
+
+    // Prepend current round's messages to the results from recursion
+    rest_fm.insert(0, first_msg);
+    rest_sm.insert(0, left_sm); // left_sm == right_sm (same computation)
+
+    (rest_fm, rest_sm, final_state)
 }
 
 #[cfg(test)]

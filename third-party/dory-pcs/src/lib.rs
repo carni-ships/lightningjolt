@@ -103,9 +103,12 @@ pub mod proof;
 pub mod reduce_and_fold;
 #[cfg(feature = "lattice")]
 pub mod reduce_and_fold_lattice;
+#[cfg(feature = "lattice")]
+pub mod debug_ntt;
 pub mod setup;
 
 /// Batch proof generation utilities for combining multiple proofs efficiently
+#[cfg(feature = "lattice")]
 pub mod batch;
 
 /// Dory-Prime: parallelizable proof generation via challenge tree
@@ -122,9 +125,11 @@ pub mod backends;
 pub use error::DoryError;
 pub use evaluation_proof::create_evaluation_proof;
 pub use messages::{
-    FirstReduceMessage, FirstReduceMessage4, ScalarProductMessage, ScalarProductProof,
-    SecondReduceMessage, SecondReduceMessage4, VMVMessage,
+    FirstReduceMessage, ScalarProductMessage, ScalarProductProof,
+    SecondReduceMessage, VMVMessage,
 };
+#[cfg(feature = "lattice")]
+pub use messages::{FirstReduceMessage4, SecondReduceMessage4};
 #[cfg(feature = "zk")]
 pub use messages::{Sigma1Proof, Sigma2Proof};
 #[cfg(feature = "zk")]
@@ -133,7 +138,7 @@ pub use mode::{Mode, Transparent};
 use primitives::arithmetic::{DoryRoutines, Field, Group, PairingCurve};
 pub use primitives::poly::{MultilinearLagrange, Polynomial};
 use primitives::serialization::{DoryDeserialize, DorySerialize};
-pub use proof::{DoryProof, DoryProof4ary};
+pub use proof::DoryProof;
 pub use reduce_and_fold::{DoryProverState, DoryVerifierState, ForkableDoryProverState};
 pub use setup::{ProverSetup, VerifierSetup};
 

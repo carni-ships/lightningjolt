@@ -22,6 +22,8 @@ use dory::{
     setup::ProverSetup,
 };
 use rayon::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub use dory::backends::arkworks::{
     ArkDoryProof, ArkFr, ArkG1, ArkG2, ArkGT, ArkworksProverSetup, ArkworksVerifierSetup, BN254,
@@ -71,7 +73,10 @@ impl DoryPolynomial<ArkFr> for MultilinearPolynomial<Fr> {
 
         let row_commitments = commit_tier_1::<E>(self, &setup.g1_vec, num_cols)?;
 
-        let g2_bases = &setup.g2_vec[..row_commitments.len()];
+        // Use min length to handle case where row_commitments.len() > setup.g2_vec.len()
+        // This can happen when the polynomial has more rows than the setup expects
+        let num_bases = row_commitments.len().min(setup.g2_vec.len());
+        let g2_bases = &setup.g2_vec[..num_bases];
         let commitment = E::multi_pair_g2_setup(&row_commitments, g2_bases);
 
         // In ZK mode, blind the tier-2 commitment with r_d1 * HT
@@ -332,77 +337,79 @@ where
 }
 
 /// Wrapper to bridge Jolt transcripts to Dory transcript trait
-#[derive(Default)]
-pub struct JoltToDoryTranscript<'a, T: Transcript> {
-    transcript: Option<&'a mut T>,
+///
+/// Uses `Rc<RefCell<T>>` to enable safe cloning and forking while
+/// maintaining the trait's mutable-access requirements.
+///
+/// This enables the tree-parallel Dory-Prime prover to fork transcripts
+/// for parallel round computation.
+#[derive(Clone)]
+pub struct JoltToDoryTranscript<T: Transcript> {
+    /// Shared, mutable reference to the underlying Jolt transcript.
+    /// Multiple clones share the same underlying transcript state.
+    inner: Rc<RefCell<T>>,
 }
 
-impl<'a, T: Transcript + Clone> Clone for JoltToDoryTranscript<'a, T> {
-    fn clone(&self) -> Self {
-        // We can't really clone the reference, so we just create a new instance
-        // The transcript field will be None after clone, which is fine for forking
-        Self { transcript: None }
-    }
-}
-
-impl<'a, T: Transcript> JoltToDoryTranscript<'a, T> {
-    pub fn new(transcript: &'a mut T) -> Self {
+impl<T: Transcript> JoltToDoryTranscript<T> {
+    /// Create a new wrapper that owns the given transcript.
+    /// The transcript is moved in and wrapped in Rc<RefCell>.
+    pub fn new(transcript: T) -> Self {
         Self {
-            transcript: Some(transcript),
+            inner: Rc::new(RefCell::new(transcript)),
+        }
+    }
+
+    /// Consume the wrapper and return the inner transcript.
+    pub fn into_inner(self) -> T {
+        Rc::try_unwrap(self.inner)
+            .expect("Only one reference should remain")
+            .into_inner()
+    }
+
+    /// Fork this transcript for parallel computation.
+    ///
+    /// Creates a new wrapper that shares the same underlying transcript state.
+    /// Both wrappers can independently append and challenge, with changes
+    /// visible to both (via RefCell's borrowing rules).
+    ///
+    /// This is used by the tree-parallel Dory-Prime prover to compute
+    /// both branches of each challenge decision in parallel.
+    fn fork_transcript(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
         }
     }
 }
 
-impl<'a, T: Transcript> DoryTranscript for JoltToDoryTranscript<'a, T> {
+impl<T: Transcript> DoryTranscript for JoltToDoryTranscript<T> {
     type Curve = BN254;
 
     fn append_bytes(&mut self, _label: &[u8], bytes: &[u8]) {
-        let transcript = self
-            .transcript
-            .as_mut()
-            .expect("Transcript not initialized");
-        transcript.append_bytes(b"dory_bytes", bytes);
+        self.inner.borrow_mut().append_bytes(b"dory_bytes", bytes);
     }
 
     fn append_field(&mut self, _label: &[u8], x: &ArkFr) {
-        let transcript = self
-            .transcript
-            .as_mut()
-            .expect("Transcript not initialized");
         let jolt_scalar: Fr = ark_to_jolt(x);
-        transcript.append_scalar(b"dory_field", &jolt_scalar);
+        self.inner.borrow_mut().append_scalar(b"dory_field", &jolt_scalar);
     }
 
     fn append_group<G: DoryGroup>(&mut self, _label: &[u8], g: &G) {
-        let transcript = self
-            .transcript
-            .as_mut()
-            .expect("Transcript not initialized");
-
         let mut buffer = Vec::new();
         g.serialize_compressed(&mut buffer)
             .expect("DorySerialize serialization should not fail");
-        transcript.append_bytes(b"dory_group", &buffer);
+        self.inner.borrow_mut().append_bytes(b"dory_group", &buffer);
     }
 
     fn append_serde<S: DorySerialize>(&mut self, _label: &[u8], s: &S) {
-        let transcript = self
-            .transcript
-            .as_mut()
-            .expect("Transcript not initialized");
-
         let mut buffer = Vec::new();
         s.serialize_compressed(&mut buffer)
             .expect("DorySerialize serialization should not fail");
-        transcript.append_bytes(b"dory_serde", &buffer);
+        self.inner.borrow_mut().append_bytes(b"dory_serde", &buffer);
     }
 
     fn challenge_scalar(&mut self, _label: &[u8]) -> ArkFr {
-        let transcript = self
-            .transcript
-            .as_mut()
-            .expect("Transcript not initialized");
-        jolt_to_ark(&transcript.challenge_scalar::<Fr>())
+        let jolt_scalar = self.inner.borrow_mut().challenge_scalar::<Fr>();
+        jolt_to_ark(&jolt_scalar)
     }
 
     fn reset(&mut self, _domain_label: &[u8]) {
@@ -410,6 +417,10 @@ impl<'a, T: Transcript> DoryTranscript for JoltToDoryTranscript<'a, T> {
     }
 
     fn fork(&self) -> Self {
-        panic!("Fork not yet supported for JoltToDoryTranscript - Dory-Prime precomputation is a placeholder")
+        // Fork creates a new wrapper sharing the same underlying transcript.
+        // Changes made through either wrapper are visible to both (via RefCell).
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
     }
 }

@@ -33,6 +33,13 @@ pub trait Field:
 
     fn from_u64(val: u64) -> Self;
     fn from_i64(val: i64) -> Self;
+
+    /// Returns the least significant bit of this field element.
+    /// Used for balanced branching in tree-parallel protocols.
+    ///
+    /// This extracts the LSB from the field element's canonical byte representation,
+    /// giving a uniform 50/50 split over the field.
+    fn branch_bit(&self) -> bool;
 }
 
 pub trait Group:

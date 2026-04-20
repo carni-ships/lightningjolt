@@ -876,7 +876,7 @@ mod pairing_helpers {
                             g1_affine.into()
                         };
                         #[cfg(not(feature = "cache"))]
-                        let g1_prep = {
+                        let g1_prep: <Bn254 as Pairing>::G1Prepared = {
                             let g1_affine: ark_bn254::G1Affine = ps[start_idx + local_idx].0.into();
                             g1_affine.into()
                         };

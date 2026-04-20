@@ -2305,7 +2305,7 @@ impl<
             &joint_poly,
             &opening_point.r,
             Some(hint),
-            &mut self.transcript,
+            self.transcript.clone(),
             sigma,
             nu,
         );
@@ -4116,6 +4116,7 @@ mod tests {
     #[serial]
     #[should_panic]
     fn malicious_trace() {
+        DoryGlobals::reset();
         let mut program = host::Program::new("fibonacci-guest");
         let inputs = postcard::to_stdvec(&1u8).unwrap();
         let (bytecode, init_memory_state, _, e_entry) = program.decode();
@@ -4165,6 +4166,15 @@ mod tests {
     #[test]
     #[serial]
     fn initial_pc_is_constrained_to_entry_point() {
+        // RAII guard to ensure DoryGlobals is reset even if the test panics
+        struct DoryResetGuard;
+        impl Drop for DoryResetGuard {
+            fn drop(&mut self) {
+                DoryGlobals::reset();
+            }
+        }
+        let _guard = DoryResetGuard;
+
         DoryGlobals::reset();
         let mut program = host::Program::new("fibonacci-guest");
         let inputs = postcard::to_stdvec(&9u8).unwrap();
@@ -4213,6 +4223,8 @@ mod tests {
             "verifier accepted proof: prover used entry_bytecode_index {original_entry_index}, \
              verifier expected {tampered_entry_index} — entry constraint not enforced"
         );
+        // _guard.drop() is called here, resetting DoryGlobals
+        // But since we have #[should_panic], the panic happens before this line
     }
 
     #[cfg(feature = "zk")]

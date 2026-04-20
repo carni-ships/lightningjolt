@@ -6,6 +6,8 @@
 use crate::utils::math::Math;
 use allocative::Allocative;
 use dory::backends::arkworks::{init_cache, ArkG1, ArkG2};
+#[cfg(test)]
+use dory::backends::arkworks::reset_cache;
 use std::cell::RefCell;
 #[cfg(test)]
 use std::{
@@ -488,6 +490,13 @@ impl DoryGlobals {
     #[cfg(test)]
     pub fn reset() {
         Self::configure_test_cache_root();
+
+        // Reset the prepared cache to ensure test isolation
+        // Different tests may use different setup sizes
+        reset_cache();
+
+        // Reset the G1 affine cache as well
+        super::commitment_scheme::reset_g1_affine_cache();
 
         THREAD_STATE.with(|state| {
             *state.borrow_mut() = DoryThreadState::new();

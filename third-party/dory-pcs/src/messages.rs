@@ -101,3 +101,31 @@ pub struct ScalarProductProof<G1, G2, F, GT> {
     pub r2: F,
     pub r3: F,
 }
+
+/// 4-ary first reduce message (Variant B - lattice feature)
+///
+/// Contains D1, D2 for each quarter, plus pre-sampled cross terms.
+#[cfg(feature = "lattice")]
+#[derive(Clone, Debug, PartialEq)]
+#[allow(missing_docs)]
+pub struct FirstReduceMessage4<G1, G2, GT> {
+    pub d1: [GT; 4],
+    pub d2: [GT; 4],
+    pub c_raw: [GT; 16],
+    pub e1_cross: [G1; 16],
+    pub e2_cross: [G2; 16],
+    pub e1_beta: G1,
+    pub e2_beta: G2,
+}
+
+/// 4-ary second reduce message (Variant B - lattice feature)
+///
+/// Contains blindings and fold parameters for 4-ary structure.
+#[cfg(feature = "lattice")]
+#[derive(Clone, Debug, PartialEq)]
+#[allow(missing_docs)]
+pub struct SecondReduceMessage4<G1, G2> {
+    pub e1: G1,
+    pub e2: G2,
+    pub r_c: G1,
+}

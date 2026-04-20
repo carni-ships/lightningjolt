@@ -1975,8 +1975,6 @@ dependencies = [
 [[package]]
 name = "dory-derive"
 version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc9c63de9e3d87d5be179ce2ddde4f31d95c12c1f20ccdbc3a70b004813959ca"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1997,11 +1995,18 @@ dependencies = [
  "criterion 0.5.1",
  "digest 0.10.7",
  "dory-derive",
+ "hex",
+ "icicle-bn254",
+ "icicle-core",
+ "icicle-runtime",
+ "lz4_flex",
+ "memmap2",
  "rand 0.8.5",
  "rand_core 0.6.4",
  "rayon",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
  "tracing-subscriber",
@@ -2318,12 +2323,17 @@ dependencies = [
 name = "ethrex-trace"
 version = "0.1.0"
 dependencies = [
+ "ark-bn254",
+ "ark-ec",
+ "ark-ff 0.5.0",
+ "ark-std 0.5.0",
  "ethrex-common",
  "ethrex-crypto",
  "ethrex-levm",
  "ethrex-storage",
  "ethrex-vm",
  "hex",
+ "jolt-core",
  "jolt-evm-guest",
  "once_cell",
  "postcard",
@@ -3614,7 +3624,7 @@ dependencies = [
  "tracing",
  "tracing-chrome",
  "tracing-subscriber",
- "zkmetal",
+ "zkmetal-sys",
 ]
 
 [[package]]
@@ -3998,6 +4008,15 @@ name = "lru-slab"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
+dependencies = [
+ "twox-hash",
+]
 
 [[package]]
 name = "macro-string"
@@ -8632,17 +8651,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "zkmetal"
-version = "0.1.0"
-dependencies = [
- "zkmetal-sys",
-]
-
-[[package]]
 name = "zkmetal-sys"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "libc",
 ]
 
 [[package]]

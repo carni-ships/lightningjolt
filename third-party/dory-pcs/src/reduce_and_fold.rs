@@ -484,6 +484,7 @@ where
     /// Computes D1_i, D2_i for each of 4 quarters, plus raw cross-term pairings
     /// C_raw_ij = pair(v1_i, v2_j) and cross MSM elements. All pre-sampled before
     /// any challenge is known, enabling true parallel cascading sub-reductions.
+    #[cfg(feature = "lattice")]
     ///
     /// This is the key to Variant B: the second message (cross terms) is now
     /// combined with the first message, and all blindings are pre-sampled.
@@ -593,6 +594,7 @@ where
     ///
     /// Updates witnesses with beta before the alpha fold.
     /// This is the same as the binary case but applied to 4-ary structure.
+    #[cfg(feature = "lattice")]
     #[tracing::instrument(skip_all, name = "DoryProverState::apply_4ary_beta")]
     pub fn apply_4ary_beta<M1, M2>(&mut self, beta: &Scalar<E>)
     where
@@ -1150,11 +1152,12 @@ impl<E: PairingCurve> DoryVerifierState<E> {
     ///
     /// Takes 4-ary reduce messages and alpha challenge, updates all state values.
     /// Reduces rounds by 2 (halving the vector size by 4 instead of 2).
+    #[cfg(feature = "lattice")]
     #[tracing::instrument(skip_all, name = "DoryVerifierState::process_round_4ary")]
     pub fn process_round_4ary(
         &mut self,
         first_msg: &FirstReduceMessage4<E::G1, E::G2, E::GT>,
-        _second_msg: &SecondReduceMessage4<E::G1, E::G2, E::GT>,
+        _second_msg: &SecondReduceMessage4<E::G1, E::G2>,
         alpha: &Scalar<E>,
         beta: &Scalar<E>,
     ) -> Result<(), DoryError>
@@ -1701,7 +1704,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn set_round_blinds(
         &mut self,
-        r_d1: Scalar<E>,
+        _r_d1: Scalar<E>,
         r_d2: Scalar<E>,
         r_e1: Scalar<E>,
         r_e2: Scalar<E>,
@@ -2154,6 +2157,19 @@ where
                 )
             },
         );
+
+        self.v1.truncate(n2);
+        self.v2.truncate(n2);
+        self.s1.truncate(n2);
+        self.s2.truncate(n2);
+
+        self.r_c = self.r_c + self.round_c[0] * alpha + self.round_c[1] * alpha_inv;
+        self.r_d1 = self.round_d1[0] * alpha + self.round_d1[1];
+        self.r_d2 = self.round_d2[0] * alpha_inv + self.round_d2[1];
+        self.r_e1 = self.r_e1 + self.round_e1[0] * alpha + self.round_e1[1] * alpha_inv;
+        self.r_e2 = self.r_e2 + self.round_e2[0] * alpha + self.round_e2[1] * alpha_inv;
+
+        self.num_rounds -= 1;
     }
 
     /// Apply second challenge (alpha) and fold vectors (sequential fallback)
@@ -2226,6 +2242,14 @@ where
     /// Get number of rounds remaining
     pub fn rounds_remaining(&self) -> usize {
         self.num_rounds
+    }
+
+    /// Clone the prover state for lookahead computation
+    ///
+    /// This creates a deep copy of the current state that can be used
+    /// for speculative computation in parallel threads.
+    pub fn clone_state(&self) -> Self {
+        self.clone()
     }
 
     /// Set initial blinding values (for Transparent mode these are zero)

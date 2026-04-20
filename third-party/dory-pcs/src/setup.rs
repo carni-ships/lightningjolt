@@ -5,7 +5,8 @@
 //! - Verifier setup: precomputed values for efficient verification
 
 use crate::primitives::arithmetic::{Group, PairingCurve};
-use crate::primitives::serialization::{DoryDeserialize, DorySerialize};
+use crate::primitives::serialization::{Compress, DoryDeserialize, DorySerialize, SerializationError, Validate};
+use std::io::{Read, Write};
 
 #[cfg(all(feature = "disk-persistence", not(target_arch = "wasm32")))]
 use std::fs::{self, File};
@@ -21,7 +22,7 @@ use std::path::PathBuf;
 /// from public randomness.
 ///
 /// For square matrices: |Γ₁| = |Γ₂| = 2^((max_log_n+1)/2)
-#[derive(Clone, Debug, DorySerialize, DoryDeserialize)]
+#[derive(Clone, Debug)]
 pub struct ProverSetup<E: PairingCurve> {
     /// Γ₁ - column generators in G1
     pub g1_vec: Vec<E::G1>,
@@ -43,7 +44,7 @@ pub struct ProverSetup<E: PairingCurve> {
 ///
 /// Contains precomputed pairing values for efficient verification.
 /// Derived from the prover setup.
-#[derive(Clone, Debug, DorySerialize, DoryDeserialize)]
+#[derive(Clone, Debug)]
 pub struct VerifierSetup<E: PairingCurve> {
     /// Δ₁L\[k\] = e(Γ₁\[..2^(k-1)\], Γ₂\[..2^(k-1)\])
     pub delta_1l: Vec<E::GT>,
@@ -77,6 +78,148 @@ pub struct VerifierSetup<E: PairingCurve> {
 
     /// Maximum log₂ of polynomial size supported
     pub max_log_n: usize,
+}
+
+// Manual trait implementations for serialization (since derive has issues with generics)
+impl<E: PairingCurve> DorySerialize for ProverSetup<E> {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        // Serialize g1_vec
+        (self.g1_vec.len() as u64).serialize_with_mode(&mut writer, compress)?;
+        for item in &self.g1_vec {
+            item.serialize_with_mode(&mut writer, compress)?;
+        }
+        // Serialize g2_vec
+        (self.g2_vec.len() as u64).serialize_with_mode(&mut writer, compress)?;
+        for item in &self.g2_vec {
+            item.serialize_with_mode(&mut writer, compress)?;
+        }
+        // Serialize blinding generators
+        self.h1.serialize_with_mode(&mut writer, compress)?;
+        self.h2.serialize_with_mode(&mut writer, compress)?;
+        self.ht.serialize_with_mode(&mut writer, compress)?;
+        Ok(())
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        let mut size = 0;
+        size += (self.g1_vec.len() as u64).serialized_size(compress);
+        for item in &self.g1_vec {
+            size += item.serialized_size(compress);
+        }
+        size += (self.g2_vec.len() as u64).serialized_size(compress);
+        for item in &self.g2_vec {
+            size += item.serialized_size(compress);
+        }
+        size += self.h1.serialized_size(compress);
+        size += self.h2.serialized_size(compress);
+        size += self.ht.serialized_size(compress);
+        size
+    }
+}
+
+impl<E: PairingCurve> DoryDeserialize for ProverSetup<E> {
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let g1_len = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        let mut g1_vec = Vec::with_capacity(g1_len);
+        for _ in 0..g1_len {
+            g1_vec.push(E::G1::deserialize_with_mode(&mut reader, compress, validate)?);
+        }
+        let g2_len = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        let mut g2_vec = Vec::with_capacity(g2_len);
+        for _ in 0..g2_len {
+            g2_vec.push(E::G2::deserialize_with_mode(&mut reader, compress, validate)?);
+        }
+        let h1 = E::G1::deserialize_with_mode(&mut reader, compress, validate)?;
+        let h2 = E::G2::deserialize_with_mode(&mut reader, compress, validate)?;
+        let ht = E::GT::deserialize_with_mode(&mut reader, compress, validate)?;
+        Ok(Self { g1_vec, g2_vec, h1, h2, ht })
+    }
+}
+
+impl<E: PairingCurve> DorySerialize for VerifierSetup<E> {
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        for item in &self.delta_1l { item.serialize_with_mode(&mut writer, compress)?; }
+        for item in &self.delta_1r { item.serialize_with_mode(&mut writer, compress)?; }
+        for item in &self.delta_2l { item.serialize_with_mode(&mut writer, compress)?; }
+        for item in &self.delta_2r { item.serialize_with_mode(&mut writer, compress)?; }
+        for item in &self.chi { item.serialize_with_mode(&mut writer, compress)?; }
+        self.g1_0.serialize_with_mode(&mut writer, compress)?;
+        self.g2_0.serialize_with_mode(&mut writer, compress)?;
+        self.h1.serialize_with_mode(&mut writer, compress)?;
+        self.h2.serialize_with_mode(&mut writer, compress)?;
+        self.ht.serialize_with_mode(&mut writer, compress)?;
+        (self.max_log_n as u64).serialize_with_mode(&mut writer, compress)?;
+        Ok(())
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        let mut size = 0;
+        for item in &self.delta_1l { size += item.serialized_size(compress); }
+        for item in &self.delta_1r { size += item.serialized_size(compress); }
+        for item in &self.delta_2l { size += item.serialized_size(compress); }
+        for item in &self.delta_2r { size += item.serialized_size(compress); }
+        for item in &self.chi { size += item.serialized_size(compress); }
+        size += self.g1_0.serialized_size(compress);
+        size += self.g2_0.serialized_size(compress);
+        size += self.h1.serialized_size(compress);
+        size += self.h2.serialized_size(compress);
+        size += self.ht.serialized_size(compress);
+        size += (self.max_log_n as u64).serialized_size(compress);
+        size
+    }
+}
+
+impl<E: PairingCurve> DoryDeserialize for VerifierSetup<E> {
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let delta_1l_len = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        let mut delta_1l = Vec::with_capacity(delta_1l_len);
+        for _ in 0..delta_1l_len {
+            delta_1l.push(E::GT::deserialize_with_mode(&mut reader, compress, validate)?);
+        }
+        let delta_1r_len = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        let mut delta_1r = Vec::with_capacity(delta_1r_len);
+        for _ in 0..delta_1r_len {
+            delta_1r.push(E::GT::deserialize_with_mode(&mut reader, compress, validate)?);
+        }
+        let delta_2l_len = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        let mut delta_2l = Vec::with_capacity(delta_2l_len);
+        for _ in 0..delta_2l_len {
+            delta_2l.push(E::GT::deserialize_with_mode(&mut reader, compress, validate)?);
+        }
+        let delta_2r_len = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        let mut delta_2r = Vec::with_capacity(delta_2r_len);
+        for _ in 0..delta_2r_len {
+            delta_2r.push(E::GT::deserialize_with_mode(&mut reader, compress, validate)?);
+        }
+        let chi_len = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        let mut chi = Vec::with_capacity(chi_len);
+        for _ in 0..chi_len {
+            chi.push(E::GT::deserialize_with_mode(&mut reader, compress, validate)?);
+        }
+        let g1_0 = E::G1::deserialize_with_mode(&mut reader, compress, validate)?;
+        let g2_0 = E::G2::deserialize_with_mode(&mut reader, compress, validate)?;
+        let h1 = E::G1::deserialize_with_mode(&mut reader, compress, validate)?;
+        let h2 = E::G2::deserialize_with_mode(&mut reader, compress, validate)?;
+        let ht = E::GT::deserialize_with_mode(&mut reader, compress, validate)?;
+        let max_log_n = u64::deserialize_with_mode(&mut reader, compress, validate)? as usize;
+        Ok(Self { delta_1l, delta_1r, delta_2l, delta_2r, chi, g1_0, g2_0, h1, h2, ht, max_log_n })
+    }
 }
 
 impl<E: PairingCurve> ProverSetup<E> {

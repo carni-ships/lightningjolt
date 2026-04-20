@@ -59,15 +59,47 @@ impl Blake2bTranscript {
         self.update_state(rand);
     }
 
+    #[cfg(test)]
+    fn debug_append(&mut self, label: &str, bytes_len: usize) {
+        // Catch where divergence starts - catch both prover and verifier
+        if self.n_rounds >= 1990 && self.n_rounds <= 2150 {
+            let is_verifier = self.expected_state_history.is_some();
+            eprintln!("[{} ROUND {}] {} ({} bytes): state={:?}",
+                if is_verifier { "VERIFIER" } else { "PROVER" },
+                self.n_rounds, label, bytes_len, &self.state[0..8]);
+            if self.n_rounds >= 2118 && self.n_rounds <= 2125 {
+                eprintln!("  [DETAILED] type={}, len={}", label, bytes_len);
+            }
+            if self.n_rounds >= 2120 && self.n_rounds <= 2125 {
+                eprintln!("  [TRACE] label={:?}, bytes_len={}", label, bytes_len);
+            }
+        }
+    }
+
     fn update_state(&mut self, new_state: [u8; 32]) {
         self.state = new_state;
         self.n_rounds += 1;
         #[cfg(test)]
         {
+            let is_verifier = self.expected_state_history.is_some();
+            if self.n_rounds >= 2013 && self.n_rounds <= 2380 {
+                eprintln!("[{} ROUND {}] update_state: new_state={:?}",
+                    if is_verifier { "VERIFIER" } else { "PROVER" },
+                    self.n_rounds, &new_state[0..8]);
+            }
             if let Some(expected_state_history) = &self.expected_state_history {
+                let n = self.n_rounds as usize;
+                if let Some(&expected) = expected_state_history.get(n) {
+                    if new_state != expected {
+                        eprintln!("TRANSCRIPT MISMATCH at round {}: expected={:?}, got={:?}", n, expected, new_state);
+                    }
+                }
                 assert!(
                     new_state == expected_state_history[self.n_rounds as usize],
-                    "Fiat-Shamir transcript mismatch"
+                    "Fiat-Shamir transcript mismatch at round {}: expected={:?}, got={:?}",
+                    self.n_rounds,
+                    expected_state_history.get(self.n_rounds as usize),
+                    new_state
                 );
             }
             self.state_history.push(new_state);
@@ -108,12 +140,26 @@ impl Transcript for Blake2bTranscript {
         assert!(label.len() < 33);
         let mut padded = [0u8; 32];
         padded[..label.len()].copy_from_slice(label);
+        #[cfg(test)]
+        self.debug_append("raw_append_label", 32);
         let hasher = self.hasher().chain_update(padded);
         self.update_state(hasher.finalize().into());
     }
 
     fn raw_append_bytes(&mut self, bytes: &[u8]) {
-        // Add the message and label
+        #[cfg(test)]
+        {
+            self.debug_append("raw_append_bytes", bytes.len());
+            if self.n_rounds >= 2370 && self.n_rounds <= 2380 && bytes.len() <= 64 {
+                let is_verifier = self.expected_state_history.is_some();
+                eprintln!("[{} ROUND {}] raw_append_bytes PRE: state={:?}, len={}",
+                    if is_verifier { "VERIFIER" } else { "PROVER" },
+                    self.n_rounds, &self.state[0..8], bytes.len());
+                eprintln!("[{} ROUND {}] raw_append_bytes: first_16={:?}",
+                    if is_verifier { "VERIFIER" } else { "PROVER" },
+                    self.n_rounds, &bytes[..16.min(bytes.len())]);
+            }
+        }
         let hasher = self.hasher().chain_update(bytes);
         self.update_state(hasher.finalize().into());
     }
@@ -122,18 +168,42 @@ impl Transcript for Blake2bTranscript {
         // Allocate into a 32 byte region (left-padded for EVM uint256 compatibility)
         let mut packed = [0u8; 32];
         packed[24..].copy_from_slice(&x.to_be_bytes());
+        #[cfg(test)]
+        self.debug_append("raw_append_u64", 32);
         let hasher = self.hasher().chain_update(packed);
         self.update_state(hasher.finalize().into());
     }
 
     fn raw_append_scalar<F: JoltField>(&mut self, scalar: &F) {
+        #[cfg(test)]
+        {
+            // Debug: capture scalar at round 2370-2380 to identify scalar values
+            if self.n_rounds >= 2120 && self.n_rounds <= 2380 {
+                let is_verifier = self.expected_state_history.is_some();
+                eprintln!("[{} ROUND {}] raw_append_scalar PRE: state={:?}",
+                    if is_verifier { "VERIFIER" } else { "PROVER" },
+                    self.n_rounds, &self.state[0..8]);
+            }
+        }
         let mut buf = vec![];
         scalar.serialize_uncompressed(&mut buf).unwrap();
         // Serialize uncompressed gives the scalar in LE byte order which is not
         // a natural representation in the EVM for scalar math so we reverse
         // to get an EVM compatible version.
         buf.reverse();
-        self.raw_append_bytes(&buf);
+        #[cfg(test)]
+        {
+            self.debug_append("raw_append_scalar", buf.len());
+            // Focus on Dory rounds where divergence starts
+            if self.n_rounds >= 1990 && self.n_rounds <= 2150 {
+                let is_verifier = self.expected_state_history.is_some();
+                eprintln!("[{} ROUND {}] raw_append_scalar: buf_len={}, first_16_bytes={:?}",
+                    if is_verifier { "VERIFIER" } else { "PROVER" },
+                    self.n_rounds, buf.len(), &buf[..16.min(buf.len())]);
+            }
+        }
+        let hasher = self.hasher().chain_update(&buf);
+        self.update_state(hasher.finalize().into());
     }
 
     // === Challenge generation methods ===
