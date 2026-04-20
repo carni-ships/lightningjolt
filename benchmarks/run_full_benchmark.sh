@@ -4,6 +4,11 @@
 # Usage:
 #   ./run_full_benchmark.sh <RPC_URL> <CACHE_DIR> <BLOCK_NUMBER> [NUM_TX]
 #
+# Features enabled:
+#   - Dory-Prime (parallel proof generation)
+#   - Lattice NTT commitment (~2x speedup)
+#   - Metal GPU acceleration (if available)
+#
 # Output:
 #   - benchmarks/results/YYYYMMDD_HHMMSS_benchmark.json (JSON results)
 #   - benchmarks/results/YYYYMMDD_HHMMSS_benchmark.log (full log)
@@ -28,10 +33,15 @@ CACHE_DIR="${2:-/tmp/ethrex-block-cache}"
 BLOCK_NUM="${3:-24922263}"
 NUM_TX="${4:-10}"
 
+# Features: Dory-Prime (default) + Lattice + Metal GPU
+FEATURES="--features lattice,metal-pairing"
+
 # Validate inputs
 if [ -z "$RPC_URL" ]; then
     echo "Error: RPC URL required"
     echo "Usage: $0 <RPC_URL> <CACHE_DIR> <BLOCK_NUMBER> [NUM_TX]"
+    echo ""
+    echo "Features: Dory-Prime + Lattice NTT + Metal GPU"
     exit 1
 fi
 
@@ -41,6 +51,7 @@ echo "============================================================"
 echo "Timestamp: $TIMESTAMP"
 echo "Block: #$BLOCK_NUM"
 echo "Transactions: $NUM_TX"
+echo "Features: Dory-Prime + Lattice NTT + Metal GPU"
 echo "Log file: $LOG_FILE"
 echo "============================================================"
 echo ""
@@ -55,10 +66,11 @@ START_TIME=$(date +%s)
     echo "Block: #$BLOCK_NUM"
     echo "RPC: $RPC_URL"
     echo "Transactions: $NUM_TX"
+    echo "Features: Dory-Prime + Lattice NTT + Metal GPU"
     echo "============================================================"
     echo ""
 
-    timeout 1800 cargo run -p ethrex-trace --example ethrex_realtime_prove -- \
+    timeout 1800 cargo run -p ethrex-trace --example ethrex_realtime_prove $FEATURES -- \
         "$RPC_URL" "$CACHE_DIR" "$BLOCK_NUM"
 
 } 2>&1 | tee "$LOG_FILE"
@@ -128,7 +140,8 @@ result = {
     "config": {
         "rpc_url": "$RPC_URL",
         "cache_dir": "$CACHE_DIR",
-        "num_tx": $NUM_TX
+        "num_tx": $NUM_TX,
+        "features": "Dory-Prime + Lattice NTT + Metal GPU"
     },
     "metrics": {
         "tx_count": tx_count,

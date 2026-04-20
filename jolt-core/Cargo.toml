@@ -40,7 +40,7 @@ prover = [
     "dory/cache", # This includes `parallel` feature
     "dory/disk-persistence",
     "dory-prime",  # Enable Dory-Prime for parallel proof generation
-    "lattice",      # Enable lattice/NTT-based commitment for faster reduce-and-fold
+    "lattice",      # Enable lattice/NTT commitment for ~2x speedup
     # "parallel-sumcheck",  # Disabled by default - adds overhead for small proofs
 ]
 # Enables parallelization of sumcheck stage initialization.
@@ -62,7 +62,7 @@ icicle = ["dep:icicle-runtime", "dep:icicle-core", "dep:icicle-bn254"]
 icicle-metal = ["icicle", "icicle-runtime/metal_backend", "icicle-bn254/metal_backend"]
 metal-pairing = ["dep:metal"]
 lattice = ["dory/lattice"]
-zkmetal = ["lattice", "dep:zkmetal"]
+zkmetal = ["dep:zkmetal-sys"]  # Enable zkMetal CPU Pippenger MSM
 
 [dependencies]
 ark-bn254.workspace = true
@@ -115,7 +115,7 @@ pprof = { version = "0.15", features = [
 ], optional = true }
 prost = { version = "0.14", optional = true }
 metal = { version = "0.33", optional = true }
-zkmetal = { version = "0.1", git = "https://github.com/carni-ships/zkmetal", optional = true }
+zkmetal-sys = { version = "0.1.0", git = "https://github.com/carni-ships/zkmetal", optional = true, features = ["neon"] }
 
 [package.metadata.cargo-machete]
 ignored = ["prost"]
