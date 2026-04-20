@@ -4,7 +4,7 @@
 
 use crate::primitives::arithmetic::Field;
 use ark_bn254::Fr;
-use ark_ff::{Field as ArkField, UniformRand, Zero as ArkZero};
+use ark_ff::{Field as ArkField, UniformRand, Zero as ArkZero, BigInteger, PrimeField};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::ops::{Add, Mul, Neg, Sub};
 
@@ -59,7 +59,7 @@ impl Field for ArkFr {
     fn branch_bit(&self) -> bool {
         // Extract LSB from the field element's little-endian byte representation.
         // BN254 scalar field representation uses 4 little-endian 64-bit limbs.
-        self.0.into_bigint().to_bytes_le()[0] & 1 == 1
+        ark_ff::PrimeField::into_bigint(self.0).to_bytes_le()[0] & 1 == 1
     }
 }
 

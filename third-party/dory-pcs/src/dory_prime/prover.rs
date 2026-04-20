@@ -27,7 +27,8 @@ use crate::primitives::transcript::Transcript;
 use crate::reduce_and_fold::ForkableDoryProverState;
 use crate::setup::ProverSetup;
 use crate::mode::Mode;
-use crate::proof::{DoryProof, ScalarProductMessage};
+use crate::proof::DoryProof;
+use crate::messages::ScalarProductMessage;
 
 use super::proof::DoryPrimeProof;
 
@@ -85,7 +86,7 @@ where
     M2: DoryRoutines<E::G2> + Send + Sync + 'static,
     P: MultilinearLagrange<F> + Send + Sync,
     T: Transcript<Curve = E>,
-    Mo: Mode + Clone,
+    Mo: Mode + Clone + Send + Sync,
 {
     if point.len() != nu + sigma {
         return Err(DoryError::InvalidPointDimension {
@@ -182,12 +183,12 @@ where
     // TREE-PARALLEL REDUCE-AND-FOLD PHASE
     // Each round forks the prover state and computes both branches in parallel.
     // This provides significant speedup by overlapping round computations.
-    let (first_messages, second_messages, prover_state) =
+    let (first_messages, second_messages, mut prover_state) =
         compute_rounds_tree::<F, E, M1, M2, P, T, Mo>(
             0,
             num_rounds,
             prover_state,
-            &mut transcript,
+            transcript,
         );
 
     let gamma = transcript.challenge_scalar(b"gamma");
@@ -263,7 +264,7 @@ where
     M2: DoryRoutines<E::G2> + Send + Sync + 'static,
     P: MultilinearLagrange<F> + Send + Sync,
     T: Transcript<Curve = E>,
-    Mo: Mode + Clone,
+    Mo: Mode + Clone + Send + Sync,
 {
     if round >= num_rounds {
         // Base case: all rounds complete, return the final state
@@ -273,13 +274,13 @@ where
     // Fork the prover state for parallel computation.
     // The transcript stays in the main thread (not Send), so we keep it
     // in the main thread and have closures only operate on the Send+Sync state.
-    let (left_state, right_state) = prover_state.fork();
+    let (mut left_state, mut right_state) = prover_state.fork();
 
     // Compute first messages for both branches in parallel.
     // Only the prover state (Send+Sync) is captured by the closures.
     let (left_fm, right_fm) = rayon::join(
-        || left_state.compute_first_message::<M1, M2>(),
-        || right_state.compute_first_message::<M1, M2>(),
+        || left_state.clone().compute_first_message::<M1, M2>(),
+        || right_state.clone().compute_first_message::<M1, M2>(),
     );
 
     // Both branches compute the same first message (same input state).
@@ -387,7 +388,7 @@ mod tests {
             nu,
             sigma,
             &prover_setup,
-            &mut transcript,
+            transcript,
         )
         .expect("proof generation should succeed");
 
@@ -507,7 +508,7 @@ mod tests {
                 nu,
                 sigma,
                 &prover_setup,
-                &mut transcript,
+                transcript,
             )
             .expect("proof generation should succeed");
 

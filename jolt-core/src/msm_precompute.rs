@@ -418,15 +418,19 @@ impl GLVPrecomputation {
         let bigint = ark_ff::PrimeField::into_bigint(*scalar);
         let mut result = G1Projective::zero();
 
-        // Process from LSB
-        for i in 0..8 {
+        // BN254 scalar field has 4 limbs (BigInt<4>)
+        // Each limb is processed 4 nibbles at a time (16 bits per nibble group)
+        for i in 0..4 {
             let word = bigint.0[i];
             for j in 0..4 {
                 let idx = ((word >> (j * bits)) & mask) as usize;
                 if idx < self.table.len() {
                     result += self.table[idx];
                 }
-                if i < 7 || j < 3 {
+                // Only double if there are more nibbles to process
+                // i < 3: more words remaining (i=0,1,2 have more words; i=3 is last word)
+                // j < 3: more nibbles in current word (j=0,1,2 have more; j=3 is last nibble)
+                if i < 3 || j < 3 {
                     result.double_in_place();
                 }
             }
@@ -474,7 +478,7 @@ mod tests {
         let mut reconstructed = Fr::zero();
         for (bit, digit) in &naf {
             let power = Fr::from((1u64 << bit) as u128);
-            reconstructed += power * Fr::from(digit as i128);
+            reconstructed += power * Fr::from(*digit as i128);
         }
 
         // NAF might differ for same value, but reconstruction should match

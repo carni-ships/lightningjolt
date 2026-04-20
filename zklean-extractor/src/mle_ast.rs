@@ -795,6 +795,16 @@ impl JoltField for MleAst {
     fn reduce_product_accum(x: Self::UnreducedProductAccum) -> Self {
         x
     }
+
+    /// For AST representation, these constants are placeholders
+    /// The actual field value doesn't matter for symbolic manipulation
+    fn two_inv() -> Self {
+        Self::new_scalar(Scalar::one())
+    }
+
+    fn six_inv() -> Self {
+        Self::new_scalar(Scalar::one())
+    }
 }
 
 /**********************************************************************

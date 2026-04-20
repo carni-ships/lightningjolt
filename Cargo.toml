@@ -159,9 +159,9 @@ ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist
 ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
 allocative = { git = "https://github.com/facebookexperimental/allocative", rev = "85b773d85d526d068ce94724ff7a7b81203fc95e" }
 
+# Patch zkmetal-sys to use our local patched version (removes dory/lattice dependency)
 [patch."https://github.com/carni-ships/zkmetal"]
-zkmetal = { path = "../zkMetal/bindings/rust/zkmetal" }
-zkmetal-sys = { path = "../zkMetal/bindings/rust/zkmetal-sys" }
+zkmetal-sys = { path = "third-party/zkmetal-patched" }
 
 [workspace.metadata.cargo-machete]
 ignored = ["jolt-sdk"]
@@ -184,7 +184,7 @@ sha3 = "0.10.8"
 blake2 = "0.10"
 blake3 = { version = "1.5.0" }
 jolt-optimizations = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
-dory = { package = "dory-pcs", path = "third-party/dory-pcs", features = ["backends", "cache", "disk-persistence"] }
+dory = { package = "dory-pcs", path = "third-party/dory-pcs", features = ["backends", "cache", "disk-persistence", "dory-prime", "parallel"] }
 
 # Core Utilities
 clap = { version = "4.5.4", features = ["derive"] }

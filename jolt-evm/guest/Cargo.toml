@@ -11,8 +11,8 @@ host-side = ["jolt/host"]
 guest = []
 # Lattice commitment scheme (faster arithmetic)
 lattice = ["jolt/lattice"]
-# GPU acceleration via zkMetal (requires lattice)
-zkmetal = ["lattice", "jolt/zkmetal"]
+# GPU acceleration via zkMetal (CPU Pippenger MSM)
+zkmetal = ["jolt/zkmetal"]
 # Metal GPU acceleration for BN254 pairing (Apple Silicon)
 metal-pairing = ["jolt/metal-pairing"]
 # Dory-Prime parallel commitment scheme
