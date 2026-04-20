@@ -338,32 +338,24 @@ where
 
 /// Wrapper to bridge Jolt transcripts to Dory transcript trait
 ///
-/// Uses `Rc<RefCell<T>>` to enable safe cloning and forking while
-/// maintaining the trait's mutable-access requirements.
+/// Uses `Rc<RefCell<&'a mut T>>` to enable safe cloning and forking
+/// while maintaining the trait's mutable-access requirements.
 ///
 /// This enables the tree-parallel Dory-Prime prover to fork transcripts
 /// for parallel round computation.
 #[derive(Clone)]
-pub struct JoltToDoryTranscript<T: Transcript> {
+pub struct JoltToDoryTranscript<'a, T: Transcript> {
     /// Shared, mutable reference to the underlying Jolt transcript.
     /// Multiple clones share the same underlying transcript state.
-    inner: Rc<RefCell<T>>,
+    inner: Rc<RefCell<&'a mut T>>,
 }
 
-impl<T: Transcript> JoltToDoryTranscript<T> {
-    /// Create a new wrapper that owns the given transcript.
-    /// The transcript is moved in and wrapped in Rc<RefCell>.
-    pub fn new(transcript: T) -> Self {
+impl<'a, T: Transcript> JoltToDoryTranscript<'a, T> {
+    /// Create a new wrapper from a mutable reference to a transcript.
+    pub fn new(transcript: &'a mut T) -> Self {
         Self {
             inner: Rc::new(RefCell::new(transcript)),
         }
-    }
-
-    /// Consume the wrapper and return the inner transcript.
-    pub fn into_inner(self) -> T {
-        Rc::try_unwrap(self.inner)
-            .expect("Only one reference should remain")
-            .into_inner()
     }
 
     /// Fork this transcript for parallel computation.
@@ -381,7 +373,7 @@ impl<T: Transcript> JoltToDoryTranscript<T> {
     }
 }
 
-impl<T: Transcript> DoryTranscript for JoltToDoryTranscript<T> {
+impl<'a, T: Transcript> DoryTranscript for JoltToDoryTranscript<'a, T> {
     type Curve = BN254;
 
     fn append_bytes(&mut self, _label: &[u8], bytes: &[u8]) {

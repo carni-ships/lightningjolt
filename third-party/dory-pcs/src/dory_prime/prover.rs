@@ -388,7 +388,7 @@ mod tests {
             nu,
             sigma,
             &prover_setup,
-            transcript,
+            &mut transcript,
         )
         .expect("proof generation should succeed");
 
@@ -508,7 +508,7 @@ mod tests {
                 nu,
                 sigma,
                 &prover_setup,
-                transcript,
+                &mut transcript,
             )
             .expect("proof generation should succeed");
 

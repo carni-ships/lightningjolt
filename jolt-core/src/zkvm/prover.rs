@@ -602,7 +602,7 @@ impl<
 
         #[cfg(test)]
         let debug_info = Some(ProverDebugInfo {
-            transcript: self.transcript.clone(),
+            transcript: &mut self.transcript,
             opening_accumulator: self.opening_accumulator.clone(),
             prover_setup: self.preprocessing.generators.clone(),
         });
@@ -2305,7 +2305,7 @@ impl<
             &joint_poly,
             &opening_point.r,
             Some(hint),
-            self.transcript.clone(),
+            &mut self.transcript,
             sigma,
             nu,
         );

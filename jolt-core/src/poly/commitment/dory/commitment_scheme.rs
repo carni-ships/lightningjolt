@@ -226,7 +226,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
         poly: &MultilinearPolynomial<ark_bn254::Fr>,
         opening_point: &[<ark_bn254::Fr as JoltField>::Challenge],
         hint: Option<Self::OpeningProofHint>,
-        transcript: ProofTranscript,
+        transcript: &mut ProofTranscript,
         sigma: usize,
         nu: usize,
     ) -> (Self::Proof, Option<Self::Field>) {
@@ -326,7 +326,7 @@ impl CommitmentScheme for DoryCommitmentScheme {
             .collect();
         let ark_eval: ArkFr = jolt_to_ark(opening);
 
-        let mut dory_transcript = JoltToDoryTranscript::<ProofTranscript>::new((*transcript).clone());
+        let mut dory_transcript = JoltToDoryTranscript::<ProofTranscript>::new(transcript);
 
         dory::verify::<ArkFr, BN254, JoltG1Routines, JoltG2Routines, _>(
             *commitment,
@@ -617,7 +617,7 @@ pub fn extract_dory_witness<ProofTranscript: Transcript>(
         .collect();
     let ark_eval: ArkFr = jolt_to_ark(opening);
 
-    let mut dory_transcript = JoltToDoryTranscript::<ProofTranscript>::new((*transcript).clone());
+    let mut dory_transcript = JoltToDoryTranscript::<ProofTranscript>::new(transcript);
 
     dory::extract_witness_data::<ArkFr, BN254, JoltG1Routines, JoltG2Routines, _>(
         *commitment,
