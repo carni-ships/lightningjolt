@@ -24,11 +24,10 @@ use rayon::prelude::*;
 
 /// GPU dispatch threshold for Dory-Prime MSMs.
 ///
-/// zkMetal DISABLED - scalar conversion bug causes incorrect results.
-/// fr_to_pippenger_scalar() assumes scalars < 2^64, but Dory uses arbitrary scalars.
-/// ICICLE fallback uses higher threshold for efficient dispatch.
+/// zkMetal NEON threshold tuned for Apple Silicon.
+/// The scalar masking fix (254-bit) allows proper handling of all scalars.
 #[cfg(feature = "zkmetal")]
-const GPU_MSM_THRESHOLD: usize = usize::MAX; // Disabled - zkMetal has bug
+const GPU_MSM_THRESHOLD: usize = 64;
 
 /// For ICICLE-only (CPU or GPU), use threshold for efficient dispatch.
 #[cfg(all(feature = "icicle", not(feature = "zkmetal")))]
