@@ -23,20 +23,14 @@ use dory::primitives::arithmetic::DoryRoutines;
 use rayon::prelude::*;
 
 /// GPU dispatch threshold for Dory-Prime MSMs.
-/// NEON-accelerated zkmetal has much lower overhead than GPU (no kernel launch, just SIMD).
-/// Tuned for Apple Silicon M-series.
 ///
-/// Benchmarks show zkmetal (NEON) beats arkworks for MSMs > 32 elements due to:
-/// - Adaptive Pippenger window sizing
-/// - Batch point normalization via Montgomery's trick
-/// - ARM NEON SIMD instructions
-///
-/// zkMetal NEON threshold tuned for Apple Silicon.
-/// 64 appears optimal - balances FFI overhead vs SIMD benefits.
+/// zkMetal DISABLED - scalar conversion bug causes incorrect results.
+/// fr_to_pippenger_scalar() assumes scalars < 2^64, but Dory uses arbitrary scalars.
+/// ICICLE fallback uses higher threshold for efficient dispatch.
 #[cfg(feature = "zkmetal")]
-const GPU_MSM_THRESHOLD: usize = 64;
+const GPU_MSM_THRESHOLD: usize = usize::MAX; // Disabled - zkMetal has bug
 
-/// For ICICLE-only (CPU or GPU), use higher threshold since overhead is higher.
+/// For ICICLE-only (CPU or GPU), use threshold for efficient dispatch.
 #[cfg(all(feature = "icicle", not(feature = "zkmetal")))]
 const GPU_MSM_THRESHOLD: usize = 64;
 
