@@ -928,6 +928,8 @@ mod pairing_helpers {
         a1: &[ArkG1],
         b1: &[ArkG2],
     ) -> (ArkGT, ArkGT) {
+        use rayon::prelude::*;
+
         let n = a0.len();
         assert_eq!(a0.len(), b0.len());
         assert_eq!(a1.len(), b1.len());
@@ -940,26 +942,48 @@ mod pairing_helpers {
             );
         }
 
-        let mut prod0 = <<Bn254 as Pairing>::TargetField>::one();
-        let mut prod1 = <<Bn254 as Pairing>::TargetField>::one();
+        // Parallel Miller loop accumulation using chunked parallel reduction
+        // Each thread computes a partial product, then we reduce at the end
+        let num_threads = rayon::current_num_threads();
+        let chunk_size = (n / num_threads).max(1);
 
-        for i in 0..n {
-            // First pair: (a0[i], b0[i])
-            let g1_a: ark_bn254::G1Affine = a0[i].0.into();
-            let g2_b: ark_bn254::G2Affine = b0[i].0.into();
-            let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
-            let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
-            let single_miller = Bn254::miller_loop(p_prep, q_prep);
-            prod0 *= single_miller.0;
-
-            // Second pair: (a1[i], b1[i])
-            let g1_a: ark_bn254::G1Affine = a1[i].0.into();
-            let g2_b: ark_bn254::G2Affine = b1[i].0.into();
-            let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
-            let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
-            let single_miller = Bn254::miller_loop(p_prep, q_prep);
-            prod1 *= single_miller.0;
-        }
+        // Compute both products in parallel using chunked iteration
+        let (prod0, prod1) = rayon::join(
+            || {
+                let mut prod = <<Bn254 as Pairing>::TargetField>::one();
+                for chunk_start in (0..n).step_by(chunk_size) {
+                    let chunk_end = (chunk_start + chunk_size).min(n);
+                    let mut chunk_prod = <<Bn254 as Pairing>::TargetField>::one();
+                    for i in chunk_start..chunk_end {
+                        let g1_a: ark_bn254::G1Affine = a0[i].0.into();
+                        let g2_b: ark_bn254::G2Affine = b0[i].0.into();
+                        let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
+                        let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
+                        let single_miller = Bn254::miller_loop(p_prep, q_prep);
+                        chunk_prod *= single_miller.0;
+                    }
+                    prod *= chunk_prod;
+                }
+                prod
+            },
+            || {
+                let mut prod = <<Bn254 as Pairing>::TargetField>::one();
+                for chunk_start in (0..n).step_by(chunk_size) {
+                    let chunk_end = (chunk_start + chunk_size).min(n);
+                    let mut chunk_prod = <<Bn254 as Pairing>::TargetField>::one();
+                    for i in chunk_start..chunk_end {
+                        let g1_a: ark_bn254::G1Affine = a1[i].0.into();
+                        let g2_b: ark_bn254::G2Affine = b1[i].0.into();
+                        let p_prep: <Bn254 as Pairing>::G1Prepared = g1_a.into();
+                        let q_prep: <Bn254 as Pairing>::G2Prepared = g2_b.into();
+                        let single_miller = Bn254::miller_loop(p_prep, q_prep);
+                        chunk_prod *= single_miller.0;
+                    }
+                    prod *= chunk_prod;
+                }
+                prod
+            },
+        );
 
         let result0 = Bn254::final_exponentiation(ark_ec::pairing::MillerLoopOutput(prod0))
             .expect("Final exponentiation should not fail");
