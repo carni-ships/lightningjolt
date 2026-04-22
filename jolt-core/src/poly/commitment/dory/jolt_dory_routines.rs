@@ -31,9 +31,10 @@ use rayon::prelude::*;
 /// - Batch point normalization via Montgomery's trick
 /// - ARM NEON SIMD instructions
 ///
-/// Testing threshold of 1 to see if zkMetal helps even for tiny MSMs.
+/// zkMetal NEON threshold tuned for Apple Silicon.
+/// 64 appears optimal - balances FFI overhead vs SIMD benefits.
 #[cfg(feature = "zkmetal")]
-const GPU_MSM_THRESHOLD: usize = 1;
+const GPU_MSM_THRESHOLD: usize = 64;
 
 /// For ICICLE-only (CPU or GPU), use higher threshold since overhead is higher.
 #[cfg(all(feature = "icicle", not(feature = "zkmetal")))]
@@ -72,10 +73,9 @@ impl DoryRoutines<ArkG1> for JoltG1Routines {
             return ArkG1(result);
         }
 
-        // Use zkMetal NEON for Apple Silicon (updated sources)
+        // Use zkMetal NEON for Apple Silicon
         #[cfg(all(feature = "zkmetal", not(feature = "icicle")))]
         {
-            eprintln!(">>> JoltG1Routines::msm called with len={}, threshold={}", len, GPU_MSM_THRESHOLD);
             if len >= GPU_MSM_THRESHOLD {
                 tracing::debug!(len, threshold = GPU_MSM_THRESHOLD, "JoltG1Routines: dispatching to zkMetal NEON MSM");
                 let projective_points: &[G1Projective] = unsafe {
