@@ -32,7 +32,6 @@ use crate::{
     },
 };
 
-#[derive(CanonicalSerialize, CanonicalDeserialize)]
 pub struct JoltProof<
     F: JoltField,
     C: JoltCurve<F = F>,
@@ -52,6 +51,9 @@ pub struct JoltProof<
     #[cfg(feature = "zk")]
     pub blindfold_proof: BlindFoldProof<F, C>,
     pub joint_opening_proof: PCS::Proof,
+    /// Opening proof hint computed during Stage 8 Dory Opening.
+    /// Stored for cross-transaction aggregation; not serialized (not needed for verification/transmission).
+    pub opening_hint: Option<PCS::OpeningProofHint>,
     pub untrusted_advice_commitment: Option<PCS::Commitment>,
     #[cfg(not(feature = "zk"))]
     pub opening_claims: Claims<F>,
@@ -60,6 +62,175 @@ pub struct JoltProof<
     pub rw_config: ReadWriteConfig,
     pub one_hot_config: OneHotConfig,
     pub dory_layout: DoryLayout,
+}
+
+impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>
+    CanonicalSerialize for JoltProof<F, C, PCS, FS>
+{
+    fn serialize_with_mode<W: Write>(
+        &self,
+        mut writer: W,
+        compress: Compress,
+    ) -> Result<(), SerializationError> {
+        self.commitments.serialize_with_mode(&mut writer, compress)?;
+        self.stage1_uni_skip_first_round_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage1_sumcheck_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage2_uni_skip_first_round_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage2_sumcheck_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage3_sumcheck_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage4_sumcheck_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage5_sumcheck_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage6_sumcheck_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.stage7_sumcheck_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        #[cfg(feature = "zk")]
+        self.blindfold_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        self.joint_opening_proof
+            .serialize_with_mode(&mut writer, compress)?;
+        // NOTE: opening_hint is intentionally skipped -- it is for local
+        // cross-transaction aggregation use only and is not needed for
+        // verification or transmission.
+        self.untrusted_advice_commitment
+            .serialize_with_mode(&mut writer, compress)?;
+        #[cfg(not(feature = "zk"))]
+        self.opening_claims.serialize_with_mode(&mut writer, compress)?;
+        (self.trace_length as u64).serialize_with_mode(&mut writer, compress)?;
+        (self.ram_K as u64).serialize_with_mode(&mut writer, compress)?;
+        self.rw_config.serialize_with_mode(&mut writer, compress)?;
+        self.one_hot_config.serialize_with_mode(&mut writer, compress)?;
+        self.dory_layout.serialize_with_mode(&mut writer, compress)?;
+        Ok(())
+    }
+
+    fn serialized_size(&self, compress: Compress) -> usize {
+        let mut size = self.commitments.serialized_size(compress);
+        size += self
+            .stage1_uni_skip_first_round_proof
+            .serialized_size(compress);
+        size += self.stage1_sumcheck_proof.serialized_size(compress);
+        size += self
+            .stage2_uni_skip_first_round_proof
+            .serialized_size(compress);
+        size += self.stage2_sumcheck_proof.serialized_size(compress);
+        size += self.stage3_sumcheck_proof.serialized_size(compress);
+        size += self.stage4_sumcheck_proof.serialized_size(compress);
+        size += self.stage5_sumcheck_proof.serialized_size(compress);
+        size += self.stage6_sumcheck_proof.serialized_size(compress);
+        size += self.stage7_sumcheck_proof.serialized_size(compress);
+        #[cfg(feature = "zk")]
+        {
+            size += self.blindfold_proof.serialized_size(compress);
+        }
+        size += self.joint_opening_proof.serialized_size(compress);
+        // NOTE: opening_hint is skipped
+        size += self
+            .untrusted_advice_commitment
+            .serialized_size(compress);
+        #[cfg(not(feature = "zk"))]
+        {
+            size += self.opening_claims.serialized_size(compress);
+        }
+        size += (self.trace_length as u64).serialized_size(compress);
+        size += (self.ram_K as u64).serialized_size(compress);
+        size += self.rw_config.serialized_size(compress);
+        size += self.one_hot_config.serialized_size(compress);
+        size += self.dory_layout.serialized_size(compress);
+        size
+    }
+}
+
+impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>
+    Valid for JoltProof<F, C, PCS, FS>
+{
+    fn check(&self) -> Result<(), SerializationError> {
+        Ok(())
+    }
+}
+
+impl<F: JoltField, C: JoltCurve<F = F>, PCS: CommitmentScheme<Field = F>, FS: Transcript>
+    CanonicalDeserialize for JoltProof<F, C, PCS, FS>
+{
+    fn deserialize_with_mode<R: Read>(
+        mut reader: R,
+        compress: Compress,
+        validate: Validate,
+    ) -> Result<Self, SerializationError> {
+        let commitments =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage1_uni_skip_first_round_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage1_sumcheck_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage2_uni_skip_first_round_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage2_sumcheck_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage3_sumcheck_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage4_sumcheck_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage5_sumcheck_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage6_sumcheck_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let stage7_sumcheck_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        #[cfg(feature = "zk")]
+        let blindfold_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let joint_opening_proof =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        // NOTE: opening_hint is intentionally skipped
+        let untrusted_advice_commitment =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        #[cfg(not(feature = "zk"))]
+        let opening_claims =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let trace_length: u64 =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let ram_K: u64 =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let rw_config =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let one_hot_config =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        let dory_layout =
+            CanonicalDeserialize::deserialize_with_mode(&mut reader, compress, validate)?;
+        Ok(JoltProof {
+            commitments,
+            stage1_uni_skip_first_round_proof,
+            stage1_sumcheck_proof,
+            stage2_uni_skip_first_round_proof,
+            stage2_sumcheck_proof,
+            stage3_sumcheck_proof,
+            stage4_sumcheck_proof,
+            stage5_sumcheck_proof,
+            stage6_sumcheck_proof,
+            stage7_sumcheck_proof,
+            #[cfg(feature = "zk")]
+            blindfold_proof,
+            joint_opening_proof,
+            // NOTE: opening_hint is set to None on deserialization
+            opening_hint: None,
+            untrusted_advice_commitment,
+            #[cfg(not(feature = "zk"))]
+            opening_claims,
+            trace_length: trace_length as usize,
+            ram_K: ram_K as usize,
+            rw_config,
+            one_hot_config,
+            dory_layout,
+        })
+    }
 }
 
 #[cfg(not(feature = "zk"))]

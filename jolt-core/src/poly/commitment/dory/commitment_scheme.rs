@@ -17,6 +17,7 @@ use crate::{
     utils::{errors::ProofVerifyError, math::Math, small_scalar::SmallScalar},
 };
 use ark_bn254::{G1Affine, G1Projective};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_ec::CurveGroup;
 use ark_ff::{AdditiveGroup, Zero};
 use dory::primitives::{
@@ -66,16 +67,21 @@ fn get_cached_g1_affine_bases(setup: &ArkworksProverSetup, row_len: usize) -> Ar
 #[derive(Clone)]
 pub struct DoryCommitmentScheme;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
 pub struct DoryOpeningProofHint(Vec<ArkG1>);
 
 impl DoryOpeningProofHint {
-    fn new(row_commitments: Vec<ArkG1>) -> Self {
+    pub fn new(row_commitments: Vec<ArkG1>) -> Self {
         Self(row_commitments)
     }
 
     fn into_rows(self) -> Vec<ArkG1> {
         self.0
+    }
+
+    /// Returns the number of row commitments in this hint.
+    pub fn num_rows(&self) -> usize {
+        self.0.len()
     }
 }
 

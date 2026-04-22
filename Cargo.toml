@@ -184,7 +184,7 @@ sha3 = "0.10.8"
 blake2 = "0.10"
 blake3 = { version = "1.5.0" }
 jolt-optimizations = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
-dory = { package = "dory-pcs", path = "third-party/dory-pcs", features = ["backends", "cache", "disk-persistence", "dory-prime", "parallel"] }
+dory = { package = "dory-pcs", path = "third-party/dory-pcs", features = ["backends", "cache", "disk-persistence", "dory-prime", "parallel", "lattice"] }
 
 # Core Utilities
 clap = { version = "4.5.4", features = ["derive"] }

@@ -574,7 +574,7 @@ impl<
             r_stage1, r_stage2, r_stage3, r_stage4, r_stage5, r_stage6, r_stage7,
         ];
 
-        let joint_opening_proof = {
+        let (joint_opening_proof, opening_hint) = {
             let t = Instant::now();
             let result = self.prove_stage8(opening_proof_hints);
             eprintln!("  [PROFILE] prove_stage8 (Dory Opening): {:.1}ms", t.elapsed().as_millis());
@@ -611,6 +611,7 @@ impl<
 
         let proof = JoltProof {
             commitments,
+            opening_hint: Some(opening_hint),
             untrusted_advice_commitment,
             stage1_uni_skip_first_round_proof,
             stage1_sumcheck_proof,
@@ -2124,7 +2125,7 @@ impl<
     fn prove_stage8(
         &mut self,
         opening_proof_hints: HashMap<CommittedPolynomial, PCS::OpeningProofHint>,
-    ) -> PCS::Proof {
+    ) -> (PCS::Proof, PCS::OpeningProofHint) {
         tracing::info!("Stage 8 proving (Dory batch opening)");
 
         let _guard = DoryGlobals::initialize_context(
@@ -2304,7 +2305,7 @@ impl<
             &self.preprocessing.generators,
             &joint_poly,
             &opening_point.r,
-            Some(hint),
+            Some(hint.clone()),
             &mut self.transcript,
             sigma,
             nu,
@@ -2328,7 +2329,7 @@ impl<
             bind_opening_inputs::<F, _>(&mut self.transcript, &opening_point.r, &joint_claim);
         }
 
-        proof
+        (proof, hint)
     }
 }
 

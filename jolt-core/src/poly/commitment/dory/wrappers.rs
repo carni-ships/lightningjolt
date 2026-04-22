@@ -29,6 +29,14 @@ pub use dory::backends::arkworks::{
     ArkDoryProof, ArkFr, ArkG1, ArkG2, ArkGT, ArkworksProverSetup, ArkworksVerifierSetup, BN254,
 };
 
+/// zkMetal CPU Pippenger MSM helper
+/// Note: zkMetal integration is done inline in the LargeScalars match arm
+#[cfg(feature = "zkmetal")]
+mod zkmetal_msm {
+    // This module is kept for potential future use
+    // Currently zkMetal MSM is called inline in the commit_rows function
+}
+
 pub type JoltFieldWrapper = ArkFr;
 
 #[inline]

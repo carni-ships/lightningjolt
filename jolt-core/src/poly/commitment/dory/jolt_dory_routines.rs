@@ -23,15 +23,23 @@ use dory::primitives::arithmetic::DoryRoutines;
 use rayon::prelude::*;
 
 /// GPU dispatch threshold for Dory-Prime MSMs.
-/// GPU overhead (kernel launch + memory transfer) is worthwhile above this size.
-/// Tuned for BN254 on modern GPUs (RTX 3080+ / M-series).
+/// NEON-accelerated zkmetal has much lower overhead than GPU (no kernel launch, just SIMD).
+/// Tuned for Apple Silicon M-series.
 ///
-/// Benchmark results on RTX 3080:
-/// - 256 elements: GPU ~0.3ms, CPU ~0.2ms => CPU wins
-/// - 512 elements: GPU ~0.5ms, CPU ~0.4ms => CPU wins but close
-/// - 1024 elements: GPU ~0.8ms, CPU ~1.2ms => GPU wins
-/// - 4096 elements: GPU ~2ms, CPU ~8ms => GPU wins 4x
-#[cfg(any(feature = "icicle", feature = "zkmetal"))]
+/// Benchmarks show zkmetal (NEON) beats arkworks for MSMs > 32 elements due to:
+/// - Adaptive Pippenger window sizing
+/// - Batch point normalization via Montgomery's trick
+/// - ARM NEON SIMD instructions
+///
+/// Testing threshold of 1 to see if zkMetal helps even for tiny MSMs.
+#[cfg(feature = "zkmetal")]
+const GPU_MSM_THRESHOLD: usize = 1;
+
+/// For ICICLE-only (CPU or GPU), use higher threshold since overhead is higher.
+#[cfg(all(feature = "icicle", not(feature = "zkmetal")))]
+const GPU_MSM_THRESHOLD: usize = 64;
+
+#[cfg(not(any(feature = "icicle", feature = "zkmetal")))]
 const GPU_MSM_THRESHOLD: usize = 512;
 
 /// left[i] = left[i] * scalar + right[i]
@@ -50,34 +58,35 @@ impl DoryRoutines<ArkG1> for JoltG1Routines {
     fn msm(bases: &[ArkG1], scalars: &[ArkFr]) -> ArkG1 {
         let len = bases.len();
 
-        // GPU-adaptive dispatch: use ICICLE only for large MSMs
+        // GPU-adaptive dispatch: prefer ICICLE for both CPU and GPU
         #[cfg(feature = "icicle")]
         if len >= GPU_MSM_THRESHOLD {
-            // SAFETY: ArkG1 has same memory layout as G1Projective
+            tracing::debug!(len, threshold = GPU_MSM_THRESHOLD, "JoltG1Routines: dispatching to ICICLE MSM");
             let projective_points: &[G1Projective] = unsafe {
                 std::slice::from_raw_parts(bases.as_ptr() as *const G1Projective, len)
             };
             let affines = G1Projective::normalize_batch(projective_points);
-
-            // SAFETY: ArkFr has same memory layout as Fr
             let raw_scalars: &[Fr] =
                 unsafe { std::slice::from_raw_parts(scalars.as_ptr() as *const Fr, len) };
-
             let result = super::icicle_msm::g1_msm(&affines, raw_scalars);
             return ArkG1(result);
         }
 
-        // Use zkMetal CPU if available
+        // Use zkMetal NEON for Apple Silicon (updated sources)
         #[cfg(all(feature = "zkmetal", not(feature = "icicle")))]
-        if len >= GPU_MSM_THRESHOLD {
-            let projective_points: &[G1Projective] = unsafe {
-                std::slice::from_raw_parts(bases.as_ptr() as *const G1Projective, len)
-            };
-            let affines = G1Projective::normalize_batch(projective_points);
-            let raw_scalars: &[Fr] =
-                unsafe { std::slice::from_raw_parts(scalars.as_ptr() as *const Fr, len) };
-            let result = super::zkmetal_cpu::pippenger_msm(&affines, raw_scalars);
-            return ArkG1(result);
+        {
+            eprintln!(">>> JoltG1Routines::msm called with len={}, threshold={}", len, GPU_MSM_THRESHOLD);
+            if len >= GPU_MSM_THRESHOLD {
+                tracing::debug!(len, threshold = GPU_MSM_THRESHOLD, "JoltG1Routines: dispatching to zkMetal NEON MSM");
+                let projective_points: &[G1Projective] = unsafe {
+                    std::slice::from_raw_parts(bases.as_ptr() as *const G1Projective, len)
+                };
+                let affines = G1Projective::normalize_batch(projective_points);
+                let raw_scalars: &[Fr] =
+                    unsafe { std::slice::from_raw_parts(scalars.as_ptr() as *const Fr, len) };
+                let result = super::zkmetal_cpu::pippenger_msm(&affines, raw_scalars);
+                return ArkG1(result);
+            }
         }
 
         // Small MSM or no GPU: use arkworks

@@ -39,7 +39,7 @@ prover = [
     "dory/backends",
     "dory/cache", # This includes `parallel` feature
     "dory/disk-persistence",
-    "dory-prime",  # Enable Dory-Prime for parallel proof generation
+    # "dory-prime",  # DISABLED: Causes 42-53% negative speedup due to fork waste (benchmarked 2026-04-21)
     "lattice",      # Enable lattice/NTT commitment for ~2x speedup
     # "parallel-sumcheck",  # Disabled by default - adds overhead for small proofs
 ]

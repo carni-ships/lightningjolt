@@ -33,16 +33,37 @@ use std::sync::Once;
 
 /// GPU dispatch threshold - GPU overhead worthwhile above this size.
 /// Tuned for BN254 curves. May need adjustment for different curves.
-pub const GPU_MSM_THRESHOLD: usize = 512;
+///
+/// Lowered to 64 for CPU ICICLE: even CPU ICICLE has optimizations
+/// (like batch normalization) that can help for Dory's MSM sizes.
+pub const GPU_MSM_THRESHOLD: usize = 64;
 
 static ICICLE_INIT: Once = Once::new();
 
 /// Ensure ICICLE runtime is initialized (one-time initialization).
 fn ensure_icicle_initialized() {
     ICICLE_INIT.call_once(|| {
-        let _ = icicle_runtime::runtime::load_backend_from_env_or_default();
-        let device = icicle_runtime::Device::new("CPU", 0);
-        icicle_runtime::set_device(&device).expect("failed to set ICICLE device");
+        eprintln!("[ICICLE] Initializing runtime...");
+
+        // First try Metal backend (macOS GPU), then fall back to CPU
+        let result = icicle_runtime::runtime::load_backend("metal");
+        if result.is_err() {
+            eprintln!("[ICICLE] Metal backend not available, falling back to CPU");
+            let _ = icicle_runtime::runtime::load_backend_from_env_or_default();
+        } else {
+            eprintln!("[ICICLE] Metal backend loaded successfully");
+        }
+
+        // Try to set Metal device, fall back to CPU if not available
+        let metal_device = icicle_runtime::Device::new("Metal", 0);
+        if icicle_runtime::runtime::is_device_available(&metal_device) {
+            icicle_runtime::set_device(&metal_device).expect("failed to set Metal device");
+            eprintln!("[ICICLE] Using Metal GPU device");
+        } else {
+            let cpu_device = icicle_runtime::Device::new("CPU", 0);
+            icicle_runtime::set_device(&cpu_device).expect("failed to set CPU device");
+            eprintln!("[ICICLE] Using CPU device");
+        }
     });
 }
 

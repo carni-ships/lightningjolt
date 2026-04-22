@@ -19,9 +19,25 @@ static INIT: Once = Once::new();
 
 fn ensure_initialized() {
     INIT.call_once(|| {
-        let _ = icicle_runtime::runtime::load_backend_from_env_or_default();
-        let device = icicle_runtime::Device::new("CPU", 0);
-        icicle_runtime::set_device(&device).expect("failed to set ICICLE device");
+        // First try Metal backend (macOS GPU), then fall back to CPU
+        let result = icicle_runtime::runtime::load_backend("metal");
+        if result.is_err() {
+            tracing::debug!("ICICLE Metal backend not available, falling back to CPU");
+            let _ = icicle_runtime::runtime::load_backend_from_env_or_default();
+        } else {
+            tracing::debug!("ICICLE Metal backend loaded successfully");
+        }
+
+        // Try to set Metal device, fall back to CPU if not available
+        let metal_device = icicle_runtime::Device::new("Metal", 0);
+        if icicle_runtime::runtime::is_device_available(&metal_device) {
+            icicle_runtime::set_device(&metal_device).expect("failed to set Metal device");
+            tracing::debug!("ICICLE Using Metal GPU device");
+        } else {
+            let cpu_device = icicle_runtime::Device::new("CPU", 0);
+            icicle_runtime::set_device(&cpu_device).expect("failed to set CPU device");
+            tracing::debug!("ICICLE Using CPU device");
+        }
     });
 }
 
@@ -164,6 +180,8 @@ fn g2_proj_from_icicle(p: IcicleG2Projective) -> G2Projective {
 pub fn g1_msm(affines: &[ArkG1Affine], scalars: &[Fr]) -> G1Projective {
     ensure_initialized();
 
+    tracing::debug!(len = affines.len(), "ICICLE G1 MSM GPU-accelerated");
+
     let icicle_bases = g1_affine_to_icicle(affines);
     // SAFETY: Fr and IcicleScalar have identical 32-byte LE Montgomery layout
     let icicle_scalars = unsafe { scalars_to_icicle(scalars) };
@@ -184,6 +202,8 @@ pub fn g1_msm(affines: &[ArkG1Affine], scalars: &[Fr]) -> G1Projective {
 
 pub fn g2_msm(affines: &[ArkG2Affine], scalars: &[Fr]) -> G2Projective {
     ensure_initialized();
+
+    tracing::debug!(len = affines.len(), "ICICLE G2 MSM GPU-accelerated");
 
     let icicle_bases = g2_affine_to_icicle(affines);
     let icicle_scalars = unsafe { scalars_to_icicle(scalars) };

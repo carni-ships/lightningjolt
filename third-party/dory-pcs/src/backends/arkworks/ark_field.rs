@@ -4,7 +4,7 @@
 
 use crate::primitives::arithmetic::Field;
 use ark_bn254::Fr;
-use ark_ff::{Field as ArkField, UniformRand, Zero as ArkZero, BigInteger, PrimeField};
+use ark_ff::{Field as ArkField, UniformRand, Zero as ArkZero, BigInteger};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::ops::{Add, Mul, Neg, Sub};
 

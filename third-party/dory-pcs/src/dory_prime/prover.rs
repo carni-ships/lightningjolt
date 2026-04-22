@@ -28,7 +28,6 @@ use crate::reduce_and_fold::ForkableDoryProverState;
 use crate::setup::ProverSetup;
 use crate::mode::Mode;
 use crate::proof::DoryProof;
-use crate::messages::ScalarProductMessage;
 
 use super::proof::DoryPrimeProof;
 
