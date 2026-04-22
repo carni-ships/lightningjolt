@@ -686,3 +686,211 @@ pub fn serialize_and_print_size(
     tracing::info!("{item_name} size: {file_size_kb:.1} kB");
     Ok(())
 }
+
+// ============================================================================
+// Batch Proof Aggregation Types
+// ============================================================================
+
+/// Data extracted from a JoltProof for batch aggregation.
+/// Contains only the data needed for aggregating the Dory opening proof.
+///
+/// NOTE: True batch aggregation requires prover-side changes to compute
+/// a combined RLC polynomial from all transactions together. This structure
+/// is for the simpler case of aggregating commitments post-hoc.
+pub struct BatchProofData<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    /// Combined commitment from all polynomial commitments
+    pub combined_commitment: PCS::Commitment,
+    /// The joint opening proof for this transaction
+    pub joint_opening_proof: PCS::Proof,
+    /// The claim at the opening point
+    pub joint_claim: F,
+    /// Hints needed for batch hint combination
+    pub opening_hint: Option<PCS::OpeningProofHint>,
+    /// Transaction index for gamma power computation
+    pub tx_index: usize,
+    _phantom: std::marker::PhantomData<(C, FS)>,
+}
+
+impl<F, C, PCS, FS> Clone for BatchProofData<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    fn clone(&self) -> Self {
+        Self {
+            combined_commitment: self.combined_commitment.clone(),
+            joint_opening_proof: self.joint_opening_proof.clone(),
+            joint_claim: self.joint_claim,
+            opening_hint: self.opening_hint.clone(),
+            tx_index: self.tx_index,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<F, C, PCS, FS> std::fmt::Debug for BatchProofData<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BatchProofData")
+            .field("tx_index", &self.tx_index)
+            .field("joint_claim", &self.joint_claim)
+            .finish()
+    }
+}
+
+impl<F, C, PCS, FS> BatchProofData<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    /// Create batch proof data from a JoltProof
+    #[cfg(not(feature = "zk"))]
+    pub fn from_jolt_proof(proof: &JoltProof<F, C, PCS, FS>, tx_index: usize) -> Self {
+        // Use the first commitment as combined commitment placeholder
+        // Real implementation requires prover-side changes
+        let combined_commitment = proof.commitments.first().cloned().unwrap_or_default();
+
+        // joint_claim extraction requires prover-side changes
+        // For now, use zero as placeholder
+        let joint_claim = F::zero();
+
+        Self {
+            combined_commitment,
+            joint_opening_proof: proof.joint_opening_proof.clone(),
+            joint_claim,
+            opening_hint: proof.opening_hint.clone(),
+            tx_index,
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Compute the batch gamma power for this transaction
+    pub fn gamma_power(&self, gamma: &F) -> F {
+        let mut result = F::one();
+        for _ in 0..self.tx_index {
+            result = result * *gamma;
+        }
+        result
+    }
+}
+
+/// Aggregated batch proof for all transactions in a block.
+///
+/// For true batch aggregation, the prover must:
+/// 1. Compute combined polynomial data from all transactions
+/// 2. Build combined RLC polynomial
+/// 3. Generate single Dory proof for combined polynomial
+///
+/// See memory/batch_aggregation_plan.md for full implementation plan.
+pub struct BatchBlockProof<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    /// Combined commitment: sum_i(gamma^i * commitment_i)
+    pub combined_commitment: PCS::Commitment,
+    /// Single aggregated Dory opening proof (requires prover-side aggregation)
+    pub aggregated_opening_proof: PCS::Proof,
+    /// Combined claim: sum_i(gamma^i * joint_claim_i)
+    pub combined_claim: F,
+    /// Gamma challenge used for aggregation
+    pub batch_gamma: F,
+    /// Number of transactions in the batch
+    pub num_transactions: usize,
+    /// Individual proof data
+    pub proof_data: Vec<BatchProofData<F, C, PCS, FS>>,
+}
+
+impl<F, C, PCS, FS> Clone for BatchBlockProof<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    fn clone(&self) -> Self {
+        Self {
+            combined_commitment: self.combined_commitment.clone(),
+            aggregated_opening_proof: self.aggregated_opening_proof.clone(),
+            combined_claim: self.combined_claim,
+            batch_gamma: self.batch_gamma,
+            num_transactions: self.num_transactions,
+            proof_data: self.proof_data.clone(),
+        }
+    }
+}
+
+impl<F, C, PCS, FS> std::fmt::Debug for BatchBlockProof<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BatchBlockProof")
+            .field("num_transactions", &self.num_transactions)
+            .field("combined_claim", &self.combined_claim)
+            .finish()
+    }
+}
+
+impl<F, C, PCS, FS> BatchBlockProof<F, C, PCS, FS>
+where
+    F: JoltField,
+    C: JoltCurve<F = F>,
+    PCS: CommitmentScheme<Field = F>,
+    FS: Transcript,
+{
+    /// Create a batch block proof from individual transaction proofs
+    ///
+    /// WARNING: This is a placeholder that does NOT produce a valid
+    /// aggregated opening proof. True batch aggregation requires prover-side
+    /// changes to compute a combined Dory proof using:
+    /// 1. PCS::combine_commitments() for commitment aggregation
+    /// 2. PCS::combine_hints() for hint aggregation
+    /// 3. Recomputing the Dory proof from combined polynomial data
+    pub fn aggregate(proofs: Vec<BatchProofData<F, C, PCS, FS>>, batch_gamma: F) -> Self {
+        let num_transactions = proofs.len();
+        if proofs.is_empty() {
+            panic!("No proofs provided for batch aggregation");
+        }
+
+        // Placeholder combined commitment - real impl needs PCS::combine_commitments()
+        let combined_commitment = proofs.first().map(|p| p.combined_commitment.clone()).unwrap_or_else(|| PCS::Commitment::default());
+
+        // Compute combined claim from all proofs
+        let combined_claim = proofs
+            .iter()
+            .fold(F::zero(), |acc, p| {
+                let gamma_power = p.gamma_power(&batch_gamma);
+                acc + (gamma_power * p.joint_claim)
+            });
+
+        Self {
+            combined_commitment,
+            aggregated_opening_proof: proofs[0].joint_opening_proof.clone(),
+            combined_claim,
+            batch_gamma,
+            num_transactions,
+            proof_data: proofs,
+        }
+    }
+}
