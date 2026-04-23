@@ -26,6 +26,7 @@ use tracer::JoltDevice;
 use verifier::JoltVerifier;
 
 pub mod bytecode;
+pub mod batch_prover;
 pub mod claim_reductions;
 pub mod config;
 pub mod instruction;
