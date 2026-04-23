@@ -30,24 +30,9 @@ use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
 // Number of threads for parallel proving.
 // Stage 8 (Dory Opening) is the bottleneck (~52% of CPU time) and is fully
 // parallelizable across transactions. Using more threads improves parallelism.
-const NUM_PROOF_THREADS: usize = 20;
+const NUM_PROOF_THREADS: usize = 8;
 
 const STEP_SIZE: usize = 41;
-
-/// Cache for witness polynomial commitments and opening hints.
-/// Key: (bytecode_hash, num_steps) - sufficient for simple transfers where trace structure is identical
-/// Value: tuple of (commitments, opening_hint)
-struct CommitmentCache {
-    cache: RwLock<HashMap<(H256, usize), CachedCommitment>>,
-}
-
-struct CachedCommitment {
-    commitments: Vec<jolt_core::poly::commitment::dory::ArkGT>,
-    opening_hint: jolt_core::zkvm::prover::JoltProverDebugInfo<ark_bn254::Fr, jolt_core::transcripts::ProverTranscript<ark_bn254::Fr>, jolt_core::poly::commitment::dory::DoryCommitmentScheme>::OpeningHint,
-}
-
-unsafe impl Send for CachedCommitment {}
-unsafe impl Sync for CachedCommitment {}
 
 fn keccak256(data: &[u8]) -> [u8; 32] {
     use tiny_keccak::Hasher;
@@ -388,12 +373,6 @@ fn main() {
     let setup_time = setup_start.elapsed();
     println!("  Prover setup time: {:.3}s", setup_time.as_secs_f64());
 
-    // Initialize commitment cache for witness caching
-    let commitment_cache = Arc::new(CommitmentCache {
-        cache: RwLock::new(HashMap::new()),
-    });
-    println!("  Commitment cache initialized for witness reuse");
-
     println!("\nSTEP 4: Generating proofs for {} transactions...\n", proofs.len());
 
     let proof_start = Instant::now();
@@ -420,42 +399,15 @@ fn main() {
             .par_iter()
             .enumerate()
             .map(|(local_idx, (tx_hash, _, _, _, gas, steps, trace_data, bytecode_hash))| {
-                    let p_start = Instant::now();
-
-                    // Create cache key: (bytecode_hash, steps) is sufficient for simple transfers
-                    // where the trace structure is identical
-                    let cache_key = (*bytecode_hash, *steps);
-
-                    // Check if we've already proved this exact bytecode+steps combination
-                    let cached = {
-                        let guard = commitment_cache.cache.read().unwrap();
-                        guard.get(&cache_key).cloned()
-                    };
-
-                    let result = if let Some(cached) = cached {
-                        // Cache hit! Reuse the entire proof for this identical transaction
-                        // This works for simple transfers where bytecode and steps are identical
-                        eprintln!("    [CACHE HIT] reusing proof for bytecode {:?}, {} steps", bytecode_hash, steps);
-                        cached.clone()
-                    } else {
-                        // Cache miss - generate proof normally
-                        let proof = prover(0u64, *bytecode_hash, *steps, *gas, true, trace_data);
-
-                        // Cache this proof for identical transactions
-                        let mut guard = commitment_cache.cache.write().unwrap();
-                        guard.insert(cache_key, proof.1.clone());
-
-                        proof
-                    };
-
-                    let p_time = p_start.elapsed();
-
-                    eprintln!("    [TX PROFILE] proving {} bytes, {} steps took {:.1}ms",
-                        trace_data.len(), steps, p_time.as_millis());
-                    (local_idx, tx_hash.clone(), *gas, *steps, trace_data.clone(), *bytecode_hash, result.0, result.1, result.2, result.1.opening_hint.clone(), result.1.commitments.clone(), p_time)
-                })
-                .collect()
-        });
+                let p_start = Instant::now();
+                let result = prover(0u64, *bytecode_hash, *steps, *gas, true, trace_data);
+                let p_time = p_start.elapsed();
+                let opening_hint = result.1.opening_hint.clone();
+                let commitments = result.1.commitments.clone();
+                (local_idx, tx_hash.clone(), *gas, *steps, trace_data.clone(), *bytecode_hash, result.0, result.1, result.2, opening_hint, commitments, p_time)
+            })
+            .collect()
+    });
 
     all_proof_data.extend(batch_proofs);
 
