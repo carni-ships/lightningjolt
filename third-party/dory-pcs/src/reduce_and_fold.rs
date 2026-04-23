@@ -20,6 +20,13 @@ use crate::primitives::transcript::Transcript;
 
 type Scalar<E> = <<E as PairingCurve>::G1 as Group>::Scalar;
 
+/// Threshold below which sequential computation is faster than parallel rayon.
+/// For small vector sizes, rayon spawn overhead exceeds parallelism benefit.
+///
+/// Note: 16 showed best results in testing but values 16-32 are all reasonable.
+/// The optimal value depends on hardware (CPU cores, memory bandwidth).
+const SEQUENTIAL_THRESHOLD: usize = 16;
+
 /// Prover state for the Dory opening protocol
 ///
 /// Maintains the current state of the prover during the interactive protocol.
@@ -231,45 +238,71 @@ where
         let g1_full = &self.setup.g1_vec[..1 << self.num_rounds];
         let g2_full = &self.setup.g2_vec[..1 << self.num_rounds];
 
+        // For small vector sizes, sequential is faster than parallel rayon overhead.
+        // Threshold chosen to balance parallelism benefit vs spawn overhead.
         #[cfg(feature = "parallel")]
-        let ((d1_left, d1_right), ((d2_left, d2_right), (e1_beta, e2_beta))) = rayon::join(
-            || {
-                rayon::join(
-                    || M::mask(E::multi_pair_g2_setup(v1_l, g2_prime), ht, &rd1[0]),
-                    || M::mask(E::multi_pair_g2_setup(v1_r, g2_prime), ht, &rd1[1]),
-                )
-            },
-            || {
+        let ((d1_left, d1_right), ((d2_left, d2_right), (e1_beta, e2_beta))) =
+            if n2 < SEQUENTIAL_THRESHOLD {
+                // Sequential: avoid rayon spawn overhead for small MSMs
+                let d1_left = M::mask(E::multi_pair_g2_setup(v1_l, g2_prime), ht, &rd1[0]);
+                let d1_right = M::mask(E::multi_pair_g2_setup(v1_r, g2_prime), ht, &rd1[1]);
+                let (d2_left_base, d2_right_base) = if let Some(scalars) = self.v2_scalars.as_ref() {
+                    let (s_l, s_r) = scalars.split_at(n2);
+                    let sum_left = M1::msm(g1_prime, s_l);
+                    let sum_right = M1::msm(g1_prime, s_r);
+                    let g2_fin = &self.setup.g2_vec[0];
+                    (E::pair(&sum_left, g2_fin), E::pair(&sum_right, g2_fin))
+                } else {
+                    (
+                        E::multi_pair_g1_setup(g1_prime, v2_l),
+                        E::multi_pair_g1_setup(g1_prime, v2_r),
+                    )
+                };
+                let d2_left = M::mask(d2_left_base, ht, &rd2[0]);
+                let d2_right = M::mask(d2_right_base, ht, &rd2[1]);
+                let e1_beta = M1::msm(g1_full, &self.s2[..]);
+                let e2_beta = M2::msm(g2_full, &self.s1[..]);
+                ((d1_left, d1_right), ((d2_left, d2_right), (e1_beta, e2_beta)))
+            } else {
                 rayon::join(
                     || {
-                        let (d2_left_base, d2_right_base) = if let Some(scalars) =
-                            self.v2_scalars.as_ref()
-                        {
-                            let (s_l, s_r) = scalars.split_at(n2);
-                            let (sum_left, sum_right) =
-                                rayon::join(|| M1::msm(g1_prime, s_l), || M1::msm(g1_prime, s_r));
-                            let g2_fin = &self.setup.g2_vec[0];
-                            (E::pair(&sum_left, g2_fin), E::pair(&sum_right, g2_fin))
-                        } else {
-                            rayon::join(
-                                || E::multi_pair_g1_setup(g1_prime, v2_l),
-                                || E::multi_pair_g1_setup(g1_prime, v2_r),
-                            )
-                        };
-                        (
-                            M::mask(d2_left_base, ht, &rd2[0]),
-                            M::mask(d2_right_base, ht, &rd2[1]),
+                        rayon::join(
+                            || M::mask(E::multi_pair_g2_setup(v1_l, g2_prime), ht, &rd1[0]),
+                            || M::mask(E::multi_pair_g2_setup(v1_r, g2_prime), ht, &rd1[1]),
                         )
                     },
                     || {
                         rayon::join(
-                            || M1::msm(g1_full, &self.s2[..]),
-                            || M2::msm(g2_full, &self.s1[..]),
+                            || {
+                                let (d2_left_base, d2_right_base) = if let Some(scalars) =
+                                    self.v2_scalars.as_ref()
+                                {
+                                    let (s_l, s_r) = scalars.split_at(n2);
+                                    let (sum_left, sum_right) =
+                                        rayon::join(|| M1::msm(g1_prime, s_l), || M1::msm(g1_prime, s_r));
+                                    let g2_fin = &self.setup.g2_vec[0];
+                                    (E::pair(&sum_left, g2_fin), E::pair(&sum_right, g2_fin))
+                                } else {
+                                    rayon::join(
+                                        || E::multi_pair_g1_setup(g1_prime, v2_l),
+                                        || E::multi_pair_g1_setup(g1_prime, v2_r),
+                                    )
+                                };
+                                (
+                                    M::mask(d2_left_base, ht, &rd2[0]),
+                                    M::mask(d2_right_base, ht, &rd2[1]),
+                                )
+                            },
+                            || {
+                                rayon::join(
+                                    || M1::msm(g1_full, &self.s2[..]),
+                                    || M2::msm(g2_full, &self.s1[..]),
+                                )
+                            },
                         )
                     },
                 )
-            },
-        );
+            };
 
         #[cfg(not(feature = "parallel"))]
         let (d1_left, d1_right, d2_left, d2_right, e1_beta, e2_beta) = {
@@ -364,30 +397,44 @@ where
 
         // C₊ ∥ C₋, E₁± ∥ E₂± — all independent, run in parallel
         // Use batch pairing for C± to reduce Miller loop overhead
+        // For small vectors, sequential is faster than parallel rayon overhead.
         #[cfg(feature = "parallel")]
-        let ((c_plus, c_minus), ((e1_plus, e1_minus), (e2_plus, e2_minus))) = rayon::join(
-            || {
-                // Use multi_pair_two_products to compute both C₊ and C₋ with a single Miller loop
+        let ((c_plus, c_minus), ((e1_plus, e1_minus), (e2_plus, e2_minus))) =
+            if n2 < SEQUENTIAL_THRESHOLD {
+                // Sequential: avoid rayon spawn overhead for small MSMs
                 let (c_plus_prod, c_minus_prod) = E::multi_pair_two_products(v1_l, v2_r, v1_r, v2_l);
-                (M::mask(c_plus_prod, ht, &rc[0]), M::mask(c_minus_prod, ht, &rc[1]))
-            },
-            || {
+                let c_plus = M::mask(c_plus_prod, ht, &rc[0]);
+                let c_minus = M::mask(c_minus_prod, ht, &rc[1]);
+                let e1_plus = M::mask(M1::msm(v1_l, s2_r), h1, &re1[0]);
+                let e1_minus = M::mask(M1::msm(v1_r, s2_l), h1, &re1[1]);
+                let e2_plus = M::mask(M2::msm(v2_r, s1_l), h2, &re2[0]);
+                let e2_minus = M::mask(M2::msm(v2_l, s1_r), h2, &re2[1]);
+                ((c_plus, c_minus), ((e1_plus, e1_minus), (e2_plus, e2_minus)))
+            } else {
                 rayon::join(
                     || {
-                        rayon::join(
-                            || M::mask(M1::msm(v1_l, s2_r), h1, &re1[0]),
-                            || M::mask(M1::msm(v1_r, s2_l), h1, &re1[1]),
-                        )
+                        // Use multi_pair_two_products to compute both C₊ and C₋ with a single Miller loop
+                        let (c_plus_prod, c_minus_prod) = E::multi_pair_two_products(v1_l, v2_r, v1_r, v2_l);
+                        (M::mask(c_plus_prod, ht, &rc[0]), M::mask(c_minus_prod, ht, &rc[1]))
                     },
                     || {
                         rayon::join(
-                            || M::mask(M2::msm(v2_r, s1_l), h2, &re2[0]),
-                            || M::mask(M2::msm(v2_l, s1_r), h2, &re2[1]),
+                            || {
+                                rayon::join(
+                                    || M::mask(M1::msm(v1_l, s2_r), h1, &re1[0]),
+                                    || M::mask(M1::msm(v1_r, s2_l), h1, &re1[1]),
+                                )
+                            },
+                            || {
+                                rayon::join(
+                                    || M::mask(M2::msm(v2_r, s1_l), h2, &re2[0]),
+                                    || M::mask(M2::msm(v2_l, s1_r), h2, &re2[1]),
+                                )
+                            },
                         )
                     },
                 )
-            },
-        );
+            };
 
         #[cfg(not(feature = "parallel"))]
         let (c_plus, c_minus, e1_plus, e1_minus, e2_plus, e2_minus) = {
