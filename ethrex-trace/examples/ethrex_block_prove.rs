@@ -26,6 +26,7 @@ use rayon::ThreadPoolBuilder;
 // Dory types for commitment aggregation
 use jolt_core::poly::commitment::dory::DoryCommitmentScheme;
 use jolt_core::poly::commitment::commitment_scheme::CommitmentScheme;
+use jolt_core::zkvm::batch_prover::{BatchProver, BatchTxData, BatchStage8Proof};
 
 // Number of threads for parallel proving.
 // Stage 8 (Dory Opening) is the bottleneck (~52% of CPU time) and is fully
@@ -420,6 +421,40 @@ fn main() {
              phase1_time.as_secs_f64(),
              total_prove_cpu.as_secs_f64() / phase1_time.as_secs_f64(),
              total_proofs);
+
+    // =========================================================================
+    // BATCH STAGE 8 AGGREGATION
+    // =========================================================================
+    // Combine all opening hints and commitments into a single batch proof.
+    // This reduces Stage 8 from O(N) Dory proofs to O(1) combined proof.
+    //
+    // IMPORTANT: True batch proving requires:
+    // 1. All transactions processed together through Stages 1-7
+    // 2. Single combined opening point (not individual per-transaction points)
+    // 3. Combined RLC polynomial built from all traces together
+    // 4. Single PCS::prove() call with combined hint
+    //
+    // Current architecture processes each tx independently, so opening points
+    // differ. Full batch proving requires prover redesign.
+    //
+    // For now, we demonstrate the batch utilities are available and summarize
+    // what would be needed for true batch aggregation.
+    println!("  Phase 1.5: Batch Stage 8 analysis for {} proofs...", all_proof_data.len());
+    let agg_start = Instant::now();
+
+    // Collect opening hints and commitments for batch analysis
+    let all_hints: Vec<_> = all_proof_data.iter().filter_map(|r| r.9.clone()).collect();
+    let all_commitments: Vec<Vec<_>> = all_proof_data.iter().map(|r| r.10.clone()).collect();
+
+    let num_hints = all_hints.len();
+    let num_commitments = all_commitments.len();
+    let agg_time = agg_start.elapsed();
+
+    println!("  Phase 1.5 complete: {:.3}s", agg_time.as_secs_f64());
+    println!("    Collected {} opening hints and {} commitment sets", num_hints, num_commitments);
+    println!("    BatchProver utilities available: combine_hints, combine_commitments");
+    println!("    NOTE: True batch Stage 8 requires prover to process all txs together");
+    println!("    Current individual proof generation prevents proper batch aggregation");
 
     // Phase 2: Verify all proofs in parallel (much faster than proving)
     println!("  Phase 2: Verifying {} proofs...", all_proof_data.len());
