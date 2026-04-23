@@ -2,21 +2,26 @@
 //!
 //! ## Overview
 //!
-//! This module provides batch aggregation for Dory commitments and hints.
-//! The key insight is that Dory commitments support homomorphic combination:
-//! - `combine_hints()` aggregates row commitments via RLC
-//! - `combine_commitments()` aggregates GT commitments
+//! This module provides batch aggregation utilities for Dory commitments and hints.
+//! The key insight is that Dory commitments support homomorphic combination.
 //!
-//! ## Architecture
+//! ## Architecture Notes
 //!
-//! For TRUE batch proving (single Dory proof for N transactions), the prover
-//! needs to build a combined RLC polynomial from all transactions' trace data.
-//! This requires architectural changes to the prover.
+//! **IMPORTANT**: True batch proving (single Dory proof for N transactions) requires
+//! prover-side architectural changes. The prover must be aware of multiple transactions
+//! from the start so it can build a combined RLC polynomial from all traces together.
 //!
-//! This module provides:
-//! 1. `BatchTxData` - data structure for per-transaction batch data
-//! 2. `BatchStage8Proof` - combined proof result
-//! 3. `BatchProver` - utilities for combining hints/commitments
+//! Current architecture:
+//! - Each `prover()` call runs Stages 1-8 for ONE transaction
+//! - Opening hints are generated during `generate_and_commit_witness_polynomials()`
+//! - Stage 8 uses `build_streaming_rlc()` which reads from a single trace
+//!
+//! For batch proving, we'd need to:
+//! 1. Extract opening hints and commitments from each transaction
+//! 2. Build a combined RLC polynomial that reads from ALL traces
+//! 3. Call `PCS::prove()` once with the combined hint
+//!
+//! This requires modifications to `prove_stage8()` and the guest interface.
 
 use crate::curve::JoltCurve;
 use crate::field::JoltField;
