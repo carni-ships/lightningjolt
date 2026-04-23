@@ -201,9 +201,96 @@ Verification: verify(AggregatedProof) [single pairing check]
 ### Implementation Notes
 
 #### GLV for G1
-- G1 GLV uses `glv_four_scalar_mul` in jolt_optimizations
-- However, `glv_four_precompute` returns tables for G2, not G1
-- `fixed_base_vector_msm_g1` is used instead (has its own GLV-like optimizations internally)
+- `fixed_base_vector_msm_g1` uses `FixedBasePrecomputedG1::new(base)` which precomputes GLV decomposition
+- This is more efficient than ICICLE's general-purpose MSM for fixed-base operations
+- `jolt_optimizations::fixed_base_vector_msm_g1` is called in `JoltG1Routines::fixed_base_vector_scalar_mul`
+- ICICLE is only used for the regular `msm()` method, not for fixed-base operations
+
+#### Stage 8 Analysis (Dory Opening)
+Stage 8 involves multiple operations per proof:
+1. **MSM operations** - G1 and G2 scalar multiplications for commitment
+2. **Reduce-and-fold rounds** - Tree-structured commitments with fold operations
+3. **Fold field vectors** - `left[i] = left[i] * scalar + right[i]` (already parallelized)
+
+**Current GPU utilization:**
+- `GPU_MSM_THRESHOLD = 64` means ICICLE used when `len >= 64`
+- For 1-step proofs, polynomial size is small (~256 elements padded)
+- Most MSMs in Stage 8 are smaller than threshold, so arkworks is used
+
+**Opportunity:** Lowering threshold to 32 actually hurt performance (18s vs 16s) because:
+- ICICLE overhead exceeds benefit for small MSMs
+- Conversion between arkworks and ICICLE formats adds latency
+- For 1-step proofs, Stage 8 MSMs are inherently small
+
+**Conclusion:** Stage 8 bottleneck is not GPU acceleration but fixed overhead per proof (~350ms).
+The real path to faster Stage 8 is proof aggregation (P0) or skipping simple proofs (P1).
+
+### Dory Stage 8: Detailed Computation Analysis
+
+**Requirement: Do NOT skip transactions. Find redundant work within Dory instead.**
+
+#### Stage 8 Workflow (per proof)
+
+1. **Setup** (~5% of time)
+   - Initialize Dory context
+   - Extract opening point from sumcheck accumulator
+   - Build polynomial claims list
+
+2. **VMV Message Computation** (~30% of time)
+   - 3 independent MSM + Pairing operations (parallelized):
+     - `C = pair(t_vec_v, g2_fin)` where `t_vec_v = MSM(row_commitments, v_vec)`
+     - `D2 = pair(MSM(g1_vec, v_vec), g2_fin)`
+     - `E1 = MSM(row_commitments, left_vec)`
+   - G2 fixed-base scalar multiplication: `v2 = fixed_base_vector_scalar_mul(g2_fin, v_vec)`
+
+3. **Reduce-and-Fold Rounds** (~55% of time)
+   - `num_rounds = max(nu, sigma)` rounds (for 1-step proof: ~8 rounds)
+   - Each round computes first message then second message
+   - **First Message** (per round):
+     - 2× `M1::msm(g1_prime, scalars)` for D2 (if v2_scalars available)
+     - 2× `M2::msm(g2_prime, scalars)` for D1
+     - 1× `M1::msm(g1_full, s2)` for E1β
+     - 1× `M2::msm(g2_full, s1)` for E2β
+   - **Second Message** (per round):
+     - 2× `M1::msm(v1_l, s2_r)` for E1±
+     - 2× `M1::msm(v1_r, s2_l)` for E1±
+     - 2× `M2::msm(v2_r, s1_l)` for E2±
+     - 2× `M2::msm(v2_l, s1_r)` for E2±
+     - 2× `E::multi_pair_two_products` for C± (uses single Miller loop)
+
+4. **Final Message** (~10% of time)
+   - Final scalar product computation
+
+#### Verified Optimization Opportunities
+
+1. **Row commitments cloned and padded** (CONFIRMED)
+   - `padded_row_commitments = row_commitments.clone()` - memory allocation
+   - `if nu < sigma { padded_row_commitments.resize(...) }` - unnecessary for square matrices
+   - **Impact**: For square matrices (nu=sigma), no padding needed, saves clone+resize
+   - **File**: `evaluation_proof.rs` lines 126-129
+
+2. **Parallel rayon::join overhead for small rounds** (CONFIRMED)
+   - For small vectors (< 32 elements), parallel overhead exceeds sequential
+   - Each round spawns multiple rayon tasks that do minimal work
+   - **Impact**: ~10-15% overhead from unnecessary parallelism in early rounds
+   - **File**: `reduce_and_fold.rs` lines 234-272, 367-390
+
+3. **Generator vector slicing** (LOW IMPACT)
+   - `g1_prime = &setup.g1_vec[..n2]` - minor, just slice creation
+   - Not worth optimizing
+
+4. **v2_scalars optimization** (ALREADY DONE)
+   - `Some(v_vec)` is passed to prover state in evaluation_proof.rs:206
+   - This optimization IS being used for round 0
+   - After round 0, v2 is updated with generator contribution, so v2_scalars becomes stale
+
+#### Concrete Optimization: Sequential Fast Path for Small Rounds
+
+In `reduce_and_fold.rs`, for early rounds with small vector sizes:
+- Add threshold check: `if n2 < 32 { use_sequential() } else { use_parallel() }`
+- For 1-step proofs, ~5 rounds have n2 < 32
+
+**Expected Impact**: 5-10% speedup on Stage 8 by eliminating rayon overhead
 
 #### Metal Pairing
 - Enabled by default: `default = ["lattice", "metal-pairing"]`
