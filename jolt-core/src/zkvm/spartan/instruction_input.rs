@@ -236,7 +236,6 @@ impl<F: JoltField> InstructionInputSumcheckProver<F> {
     pub fn initialize(
         params: InstructionInputParams<F>,
         trace: &[Cycle],
-        _opening_accumulator: &ProverOpeningAccumulator<F>,
     ) -> Self {
         // Compute MLEs.
         let mut left_is_rs1_poly = vec![false; trace.len()];

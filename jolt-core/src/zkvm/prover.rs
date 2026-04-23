@@ -602,7 +602,7 @@ impl<
 
         #[cfg(test)]
         let debug_info = Some(ProverDebugInfo {
-            transcript: &mut self.transcript,
+            transcript: self.transcript.clone(),
             opening_accumulator: self.opening_accumulator.clone(),
             prover_setup: self.preprocessing.generators.clone(),
         });
@@ -1169,7 +1169,6 @@ impl<
                             InstructionInputSumcheckProver::initialize(
                                 spartan_instruction_input_params,
                                 &self.trace,
-                                &self.opening_accumulator,
                             )
                         },
                     )
@@ -1193,7 +1192,6 @@ impl<
         let spartan_instruction_input = InstructionInputSumcheckProver::initialize(
             spartan_instruction_input_params,
             &self.trace,
-            &self.opening_accumulator,
         );
         #[cfg(not(feature = "parallel-sumcheck"))]
         let spartan_registers_claim_reduction = RegistersClaimReductionSumcheckProver::initialize(

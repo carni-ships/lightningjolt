@@ -24,17 +24,19 @@ use rayon::prelude::*;
 
 /// GPU dispatch threshold for Dory-Prime MSMs.
 ///
-/// zkMetal NEON threshold tuned for Apple Silicon.
-/// The scalar masking fix (254-bit) allows proper handling of all scalars.
+/// zkMetal NEON is DISABLED due to scalar format incompatibility with arkworks.
+/// All MSMs use arkworks until zkMetal scalar conversion is fixed.
+///
+/// Set to usize::MAX to completely disable zkMetal.
 #[cfg(feature = "zkmetal")]
-const GPU_MSM_THRESHOLD: usize = 64;
+const GPU_MSM_THRESHOLD: usize = usize::MAX;
 
 /// For ICICLE-only (CPU or GPU), use threshold for efficient dispatch.
 #[cfg(all(feature = "icicle", not(feature = "zkmetal")))]
 const GPU_MSM_THRESHOLD: usize = 64;
 
 #[cfg(not(any(feature = "icicle", feature = "zkmetal")))]
-const GPU_MSM_THRESHOLD: usize = 512;
+const GPU_MSM_THRESHOLD: usize = 256;  // Lower threshold for arkworks parallel MSM
 
 /// left[i] = left[i] * scalar + right[i]
 fn fold_field_vectors(left: &mut [ArkFr], right: &[ArkFr], scalar: &ArkFr) {
@@ -55,7 +57,6 @@ impl DoryRoutines<ArkG1> for JoltG1Routines {
         // GPU-adaptive dispatch: prefer ICICLE for both CPU and GPU
         #[cfg(feature = "icicle")]
         if len >= GPU_MSM_THRESHOLD {
-            tracing::debug!(len, threshold = GPU_MSM_THRESHOLD, "JoltG1Routines: dispatching to ICICLE MSM");
             let projective_points: &[G1Projective] = unsafe {
                 std::slice::from_raw_parts(bases.as_ptr() as *const G1Projective, len)
             };
@@ -70,7 +71,6 @@ impl DoryRoutines<ArkG1> for JoltG1Routines {
         #[cfg(all(feature = "zkmetal", not(feature = "icicle")))]
         {
             if len >= GPU_MSM_THRESHOLD {
-                tracing::debug!(len, threshold = GPU_MSM_THRESHOLD, "JoltG1Routines: dispatching to zkMetal NEON MSM");
                 let projective_points: &[G1Projective] = unsafe {
                     std::slice::from_raw_parts(bases.as_ptr() as *const G1Projective, len)
                 };
@@ -103,6 +103,8 @@ impl DoryRoutines<ArkG1> for JoltG1Routines {
         let raw_scalars: &[Fr] =
             unsafe { std::slice::from_raw_parts(scalars.as_ptr() as *const Fr, scalars.len()) };
 
+        // Note: GLV for G1 requires different precomputed tables than G2
+        // Use the standard fixed-base MSM which has its own optimizations
         let results_proj = jolt_optimizations::fixed_base_vector_msm_g1(&base.0, raw_scalars);
 
         results_proj.into_iter().map(ArkG1).collect()

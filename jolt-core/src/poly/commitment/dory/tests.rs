@@ -44,7 +44,7 @@ mod tests {
             &poly,
             &opening_point,
             Some(row_commitments),
-            prove_transcript,
+            &mut prove_transcript,
             sigma,
             nu,
         );
@@ -274,7 +274,7 @@ mod tests {
             &poly,
             &opening_point,
             Some(row_commitments),
-            prove_transcript,
+            &mut prove_transcript,
             5,
             5,
         );
@@ -495,7 +495,7 @@ mod tests {
             &poly,
             &opening_point,
             Some(row_commitments),
-            prove_transcript,
+            &mut prove_transcript,
             5,
             5,
         );
@@ -583,7 +583,7 @@ mod tests {
             &combined_poly,
             &opening_point,
             Some(combined_hint),
-            prove_transcript,
+            &mut prove_transcript,
             5,
             5,
         );
@@ -680,7 +680,7 @@ mod tests {
             &combined_poly,
             &opening_point,
             Some(combined_hint),
-            prove_transcript,
+            &mut prove_transcript,
             5,
             5,
         );
@@ -710,7 +710,7 @@ mod tests {
             &combined_poly,
             &opening_point,
             Some(direct_hint),
-            prove_transcript2,
+            &mut prove_transcript2,
             5,
             5,
         );
@@ -917,7 +917,7 @@ mod tests {
             &poly,
             &opening_point,
             Some(row_commitments),
-            prove_transcript,
+            &mut prove_transcript,
             5,
             5,
         );
