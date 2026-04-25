@@ -63,6 +63,8 @@ icicle-metal = ["icicle", "icicle-runtime/metal_backend", "icicle-bn254/metal_ba
 metal-pairing = ["dep:metal"]
 lattice = ["dory/lattice"]
 zkmetal = ["dep:zkmetal-sys"]  # Enable zkMetal CPU Pippenger MSM
+# circle-binius feature requires binius crate
+circle-binius = ["dep:binius-field"]
 
 [dependencies]
 ark-bn254.workspace = true
@@ -116,6 +118,7 @@ pprof = { version = "0.15", features = [
 prost = { version = "0.14", optional = true }
 metal = { version = "0.33", optional = true }
 zkmetal-sys = { version = "0.1.0", git = "https://github.com/carni-ships/zkmetal", optional = true, features = ["neon"] }
+binius-field = { workspace = true, optional = true }
 
 [package.metadata.cargo-machete]
 ignored = ["prost"]

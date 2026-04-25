@@ -186,6 +186,10 @@ blake3 = { version = "1.5.0" }
 jolt-optimizations = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
 dory = { package = "dory-pcs", path = "third-party/dory-pcs", features = ["backends", "cache", "disk-persistence", "dory-prime", "parallel", "lattice"] }
 
+# CircleBinius (post-quantum, no trusted setup)
+binius-field = { git = "https://github.com/binius-zk/binius64", package = "binius-field" }
+# plonky3-circle = { git = "https://github.com/PolygonalOps/plonky3", package = "plonky3-circle" }
+
 # Core Utilities
 clap = { version = "4.5.4", features = ["derive"] }
 eyre = "0.6.12"
