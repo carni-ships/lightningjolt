@@ -53,13 +53,27 @@ pub struct OutputSumcheckParams<F: JoltField> {
     pub phase1_num_rounds: usize,
     pub phase2_num_rounds: usize,
     pub r_address: Vec<F::Challenge>,
-    pub program_io: JoltDevice,
+    /// For single-trace mode, contains one JoltDevice.
+    /// For batch mode, contains all transaction JoltDevices for combined output.
+    pub program_ios: Vec<JoltDevice>,
 }
 
 impl<F: JoltField> OutputSumcheckParams<F> {
-    pub fn new(
+    /// Creates params for single-trace mode (backward compatible).
+    pub fn new_single(
         ram_K: usize,
         program_io: &JoltDevice,
+        transcript: &mut impl Transcript,
+        trace_len: usize,
+        rw_config: &ReadWriteConfig,
+    ) -> Self {
+        Self::new_batch(ram_K, &[program_io.clone()], transcript, trace_len, rw_config)
+    }
+
+    /// Creates params for batch mode with multiple transactions.
+    pub fn new_batch(
+        ram_K: usize,
+        program_ios: &[JoltDevice],
         transcript: &mut impl Transcript,
         trace_len: usize,
         rw_config: &ReadWriteConfig,
@@ -71,7 +85,7 @@ impl<F: JoltField> OutputSumcheckParams<F> {
             phase1_num_rounds: rw_config.ram_rw_phase1_num_rounds as usize,
             phase2_num_rounds: rw_config.ram_rw_phase2_num_rounds as usize,
             r_address,
-            program_io: program_io.clone(),
+            program_ios: program_ios.to_vec(),
         }
     }
 
@@ -167,7 +181,7 @@ impl<F: JoltField> OutputSumcheckParams<F> {
     pub fn constraint_challenge_values(&self, sumcheck_challenges: &[F::Challenge]) -> Vec<F> {
         let r_address = &self.r_address;
         let r_address_prime = self.normalize_opening_point(sumcheck_challenges).r;
-        let program_io = &self.program_io;
+        let program_io = &self.program_ios[0];
 
         let io_mask = RangeMaskPolynomial::<F>::new(
             remap_address(
@@ -381,7 +395,7 @@ impl<F: JoltField> OutputSumcheckVerifier<F> {
         trace_len: usize,
         rw_config: &ReadWriteConfig,
     ) -> Self {
-        let params = OutputSumcheckParams::new(ram_K, program_io, transcript, trace_len, rw_config);
+        let params = OutputSumcheckParams::new_single(ram_K, program_io, transcript, trace_len, rw_config);
         Self { params }
     }
 }
@@ -406,7 +420,7 @@ impl<F: JoltField, T: Transcript> SumcheckInstanceVerifier<F, T> for OutputSumch
         let r_address = &self.params.r_address;
         // Derive r' using the same endianness conversion as used when caching openings
         let r_address_prime = self.params.normalize_opening_point(sumcheck_challenges).r;
-        let program_io = &self.params.program_io;
+        let program_io = &self.params.program_ios[0];
 
         let io_mask = RangeMaskPolynomial::<F>::new(
             remap_address(

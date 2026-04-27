@@ -229,7 +229,7 @@ fn prove_example(
             None,
             None,
         );
-        let program_io = prover.program_io.clone();
+        let program_io = prover.program_ios[0].clone();
         let (jolt_proof, _) = prover.prove();
 
         let verifier_preprocessing = JoltVerifierPreprocessing::from(&preprocessing);

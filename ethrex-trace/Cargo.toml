@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["lattice", "metal-pairing"]  # Metal pairing for BN254 GPU verification on Apple Silicon
+default = ["circle-binius", "metal-pairing"]  # CircleBinius for faster proving, metal pairing for GPU verification on Apple Silicon
 lattice = ["jolt-evm-guest/lattice", "jolt-core/lattice"]
 zkmetal = ["lattice", "jolt-evm-guest/zkmetal", "jolt-core/zkmetal"]
 metal-pairing = ["jolt-evm-guest/metal-pairing", "jolt-core/metal-pairing"]
 dory-prime = ["jolt-evm-guest/dory-prime"]
 icicle = ["jolt-evm-guest/icicle"]
 icicle-metal = ["jolt-evm-guest/icicle-metal"]
+circle-binius = ["jolt-evm-guest/circle-binius", "jolt-core/circle-binius"]
 
 [dependencies]
 # Ethrex VM for EVM execution
@@ -20,8 +21,8 @@ ethrex-common = { path = "../../ethrex/crates/common" }
 ethrex-crypto = { path = "../../ethrex/crates/common/crypto", features = ["std"] }
 
 # Jolt for proving
-jolt-evm-guest = { path = "../jolt-evm/guest", features = ["host-side", "lattice", "icicle"] }
-jolt-core = { path = "../jolt-core", features = ["host", "lattice", "icicle"] }
+jolt-evm-guest = { path = "../jolt-evm/guest", features = ["host-side", "circle-binius", "lattice", "zkmetal"] }
+jolt-core = { path = "../jolt-core", features = ["host", "circle-binius", "lattice", "zkmetal"] }
 rand = "0.8"
 ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
 ark-std = { version = "0.5.0", default-features = false }

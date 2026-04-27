@@ -21,6 +21,8 @@ dory-prime = ["jolt/dory-prime"]
 icicle = ["jolt/icicle"]
 # ICICLE MSM acceleration (Metal GPU)
 icicle-metal = ["jolt/icicle-metal"]
+# Circle Binius commitment scheme (post-quantum, no trusted setup)
+circle-binius = ["jolt/circle-binius"]
 
 [dependencies]
 once_cell = { version = "1.18", default-features = false, features = ["alloc", "race"] }

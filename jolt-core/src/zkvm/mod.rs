@@ -9,6 +9,7 @@ use crate::{
     poly::opening_proof::{OpeningId, SumcheckId},
     poly::{
         commitment::commitment_scheme::CommitmentScheme, commitment::dory::DoryCommitmentScheme,
+        commitment::circle_binius::commitment_scheme::CircleBiniusCommitmentScheme,
     },
     transcripts::Blake2bTranscript,
     transcripts::KeccakTranscript,
@@ -187,6 +188,42 @@ pub fn fiat_shamir_preamble(
     transcript.append_u64(b"entry_address", entry_address);
 }
 
+/// Absorb public instance data for batch proving with multiple transactions.
+/// Binds all transaction I/Os to the transcript for security.
+pub fn fiat_shamir_preamble_batch(
+    program_ios: &[JoltDevice],
+    ram_K: usize,
+    trace_length: usize,
+    entry_address: u64,
+    transcript: &mut impl Transcript,
+) {
+    // Append number of transactions for binding
+    transcript.append_u64(b"batch_size", program_ios.len() as u64);
+
+    // Append first transaction's memory layout (all should be compatible)
+    if let Some(first) = program_ios.first() {
+        transcript.append_u64(b"max_input_size", first.memory_layout.max_input_size);
+        transcript.append_u64(b"max_output_size", first.memory_layout.max_output_size);
+        transcript.append_u64(b"heap_size", first.memory_layout.heap_size);
+    }
+
+    // Append combined I/O digest for all transactions
+    // This binds all transaction outputs to the transcript
+    for (i, io) in program_ios.iter().enumerate() {
+        // Include transaction index for binding
+        transcript.append_u64(b"tx_index", i as u64);
+        // Include inputs and outputs
+        transcript.append_bytes(b"inputs", &io.inputs);
+        transcript.append_bytes(b"outputs", &io.outputs);
+        transcript.append_u64(b"panic", io.panic as u64);
+    }
+
+    // Common parameters
+    transcript.append_u64(b"ram_K", ram_K as u64);
+    transcript.append_u64(b"trace_length", trace_length as u64);
+    transcript.append_u64(b"entry_address", entry_address);
+}
+
 #[cfg(feature = "prover")]
 pub type RV64IMACProver<'a> =
     JoltCpuProver<'a, Fr, Bn254Curve, DoryCommitmentScheme, Blake2bTranscript>;
@@ -201,6 +238,17 @@ pub type KeccakProver<'a> =
 pub type KeccakVerifier<'a> =
     JoltVerifier<'a, Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
 pub type KeccakProof = JoltProof<Fr, Bn254Curve, DoryCommitmentScheme, KeccakTranscript>;
+
+/// CircleBinius-based type aliases for post-quantum commitments (no trusted setup).
+#[cfg(feature = "prover")]
+#[cfg(feature = "circle-binius")]
+pub type CircleBiniusProver<'a> =
+    JoltCpuProver<'a, Fr, Bn254Curve, CircleBiniusCommitmentScheme, Blake2bTranscript>;
+#[cfg(feature = "circle-binius")]
+pub type CircleBiniusVerifier<'a> =
+    JoltVerifier<'a, Fr, Bn254Curve, CircleBiniusCommitmentScheme, Blake2bTranscript>;
+#[cfg(feature = "circle-binius")]
+pub type CircleBiniusProof = JoltProof<Fr, Bn254Curve, CircleBiniusCommitmentScheme, Blake2bTranscript>;
 
 pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
     /// Gets the byte size of the serialized data
@@ -238,4 +286,6 @@ pub trait Serializable: CanonicalSerialize + CanonicalDeserialize + Sized {
 }
 
 impl Serializable for RV64IMACProof {}
+#[cfg(feature = "circle-binius")]
+impl Serializable for CircleBiniusProof {}
 impl Serializable for JoltDevice {}

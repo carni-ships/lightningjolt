@@ -553,7 +553,7 @@ mod tests {
                             phase1_num_rounds: p1,
                             phase2_num_rounds: p2,
                             r_address: vec![<F as JoltField>::Challenge::from(0u128); log_k],
-                            program_io: JoltDevice::default(),
+                            program_ios: vec![JoltDevice::default()],
                         };
                         let out_addr = out_params.normalize_opening_point(local_slice);
                         assert_eq!(out_addr.r, rw_addr.to_vec());

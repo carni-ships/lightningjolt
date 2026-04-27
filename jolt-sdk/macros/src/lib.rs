@@ -750,7 +750,7 @@ impl MacroBuilder {
                     #commitment_arg,
                     advice_tape,
                 );
-                let io_device = prover.program_io.clone();
+                let io_device = prover.program_ios[0].clone();
                 let (jolt_proof, _) = prover.prove();
 
                 #handle_return
